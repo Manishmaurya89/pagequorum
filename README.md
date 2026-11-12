@@ -22,7 +22,7 @@ extractors and keeps only the parts they agree on:
 
 | voter | what it is |
 |---|---|
-| [trafilatura](https://github.com/adbar/trafilatura) | strongest open-source extractor on public benchmarks |
+| [trafilatura](https://github.com/adbar/trafilatura) | among the strongest open-source extractors on public benchmarks |
 | [readability](https://github.com/buriy/python-readability) | Python port of Mozilla Readability (Firefox reader view) |
 | [resiliparse](https://github.com/chatnoir-eu/chatnoir-resiliparse) | main-content extraction from the Webis group (ChatNoir search engine) |
 | JSON-LD `articleBody` | the publisher's own article text, when the page has it |
@@ -107,6 +107,43 @@ What this does and does not show:
   benchmark for them yet.
 
 Reproduce: `uv run python bench/download_aeb.py && uv run python bench/aeb.py`.
+
+### Compared with other tools
+
+Same pages, same scorer, same split. The commercial and other extractors are scored
+from the outputs saved in the benchmark repository (scoring them here reproduces the
+benchmark's published numbers exactly, which checks the scorer). Crawl4AI 0.9.5 was
+run by us on the same HTML with its documented `PruningContentFilter`, and its
+Markdown was turned into plain text before scoring, so link URLs are not counted
+against it.
+
+| system | **F1 test (held out)** | F1 (all) | precision (all) | recall (all) | exact match |
+|---|---|---|---|---|---|
+| rs-trafilatura | **0.974** | 0.970 ± 0.004 | 0.951 | 0.990 | 0.287 |
+| Zyte AutoExtract (commercial, 2019) | 0.972 | 0.970 ± 0.005 | **0.984** | 0.956 | **0.470** |
+| **pagequorum** | 0.963 | 0.970 ± 0.006 | 0.969 | 0.970 | 0.436 |
+| trafilatura 2.0 | 0.959 | 0.958 ± 0.006 | 0.938 | 0.978 | 0.293 |
+| Diffbot (commercial, 2019) | 0.950 | 0.951 ± 0.010 | 0.958 | 0.944 | 0.348 |
+| Mozilla Readability.js | 0.947 | 0.947 ± 0.005 | 0.914 | 0.982 | 0.166 |
+| Crawl4AI 0.9.5 `fit_markdown` | 0.799 | 0.805 ± 0.012 | 0.685 | 0.976 | 0.006 |
+| Crawl4AI 0.9.5 `raw_markdown` | 0.659 | 0.666 ± 0.015 | 0.502 | 0.990 | 0.000 |
+
+- pagequorum is **not** the most accurate extractor here. On held-out pages,
+  rs-trafilatura and Zyte's commercial AutoExtract are about 0.01 F1 ahead, and
+  AutoExtract keeps less boilerplate (precision 0.984 vs 0.969).
+- Crawl4AI keeps nearly all of the article (recall 0.976) but also a lot that is not
+  article: "you may also like" links, comment boxes and the like. Its median output
+  is 797 words where the labelled article has 529 (pagequorum: 539). Adding its
+  `excluded_tags` clean-up option did not help (0.794 held out).
+- Firecrawl was not run here. An independent run with the same scorer and the same
+  Markdown clean-up reported F1 0.785 (precision 0.660) with `onlyMainContent`
+  ([robertz.co, October 2026](https://robertz.co/knowledge/computer-science/ai-llm-engineering/web-scraper-extraction-quality/)).
+- These are news and blog pages, which suit article extractors. Crawl4AI and
+  Firecrawl also render JavaScript and crawl at scale, which this benchmark does
+  not measure.
+
+Reproduce: `uv run --no-project --with crawl4ai==0.9.5 python bench/run_crawl4ai.py`,
+then `uv run python bench/compare.py`.
 [`bench/README.md`](bench/README.md) has the method and a log of everything
 tried, including what did not work.
 

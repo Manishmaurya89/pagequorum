@@ -15,13 +15,21 @@
   (95), the rest **test** (86). Every design choice and parameter below was made
   on dev.
 - **Disclosure:** the report prints the test column on every run, so test
-  numbers were *seen* six times during development (0.945, 0.958, 0.960, 0.963,
+  numbers were *seen* seven times during development (0.945, 0.958, 0.960, 0.963,
   then 0.963 twice more after the docs-page and Wikipedia fixes, against
-  trafilatura's 0.963). No choice was made on them. Every comparison between
+  trafilatura's 0.963), and a seventh time (0.963, unchanged) when comparing with
+  other tools in `compare.py`. No choice was made on them. Every comparison between
   alternatives below used dev only, and the last changes were prompted by live
   pages (Python json docs, Hindi Wikipedia), not by the benchmark.
 
 Run: `uv run python bench/aeb.py` (report, writes `results/`) or `--tune` (dev grid).
+
+**Other tools:** `compare.py` scores the outputs saved in the benchmark repository
+(Zyte AutoExtract, Diffbot, rs-trafilatura, trafilatura, Readability.js) with the same
+scorer and split; this reproduces the benchmark's published F1 for each of them, which
+checks `metrics.py`. Crawl4AI is run by `run_crawl4ai.py` in its own environment
+(`uv run --no-project --with crawl4ai==0.9.5 python bench/run_crawl4ai.py`), and its
+Markdown is turned into plain text before scoring. Results: `results/compare.md`.
 
 ## Decision log (dev F1 unless stated)
 
