@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Configuring retries — Acme SDK documentation</title>
+<link rel="canonical" href="https://docs.acme.dev/sdk/retries/">
+</head>
+<body>
+<div class="md-header"><a href="/">Acme SDK</a> <a href="/sdk/">Docs</a> <a href="/blog/">Blog</a> <a href="https://github.com/acme/sdk">GitHub</a></div>
+<div class="md-container">
+<nav class="md-sidebar" aria-label="Navigation">
+  <ul>
+    <li><a href="/sdk/install/">Installation</a></li>
+    <li><a href="/sdk/quickstart/">Quickstart</a></li>
+    <li><a href="/sdk/retries/">Configuring retries</a></li>
+    <li><a href="/sdk/timeouts/">Timeouts</a></li>
+    <li><a href="/sdk/logging/">Logging</a></li>
+  </ul>
+</nav>
+<main class="md-main">
+<article class="md-content">
+<h1>Configuring retries</h1>
+<p>The client retries failed requests automatically. A request is retried when the connection fails, when the server answers with status 429, or with any 5xx status. Other errors are raised immediately so that bugs in your code surface quickly.</p>
+<h2 id="defaults">Defaults</h2>
+<p>By default the client makes up to three attempts with exponential backoff between them. The table below lists every setting and its default value.</p>
+<table>
+<thead><tr><th>Setting</th><th>Default</th><th>Meaning</th></tr></thead>
+<tbody>
+<tr><td><code>max_attempts</code></td><td>3</td><td>Total attempts including the first one</td></tr>
+<tr><td><code>backoff</code></td><td>0.5</td><td>Initial delay in seconds, doubled after each failure</td></tr>
+<tr><td><code>max_backoff</code></td><td>30</td><td>Upper bound for a single delay in seconds</td></tr>
+</tbody>
+</table>
+<h2 id="custom">Custom policies</h2>
+<p>Pass a <code>RetryPolicy</code> when you create the client to change how failures are handled. The policy applies to every request made through that client instance.</p>
+<div class="tabs">
+<div role="tabpanel" class="tab-python"><pre><code class="language-python">from acme import Client, RetryPolicy
+
+client = Client(retry=RetryPolicy(max_attempts=5, backoff=1.0))
+</code></pre></div>
+<div role="tabpanel" class="tab-js" hidden><pre><code class="language-js">import { Client, RetryPolicy } from "acme";
+
+const client = new Client({ retry: new RetryPolicy({ maxAttempts: 5, backoff: 1.0 }) });
+</code></pre></div>
+</div>
+<div class="admonition warning"><p class="admonition-title">Warning</p><p>Retrying requests that are not idempotent, such as payments, can perform the same operation twice. Disable retries for those calls or send an idempotency key with every request.</p></div>
+<h3 id="per-request">Per-request overrides</h3>
+<p>Any single call can override the client policy with the <code>retry</code> argument. Passing <code>retry=None</code> disables retries for that call only, which is the recommended setting for non-idempotent operations.</p>
+<pre><code class="language-python">client.charge(amount=1000, retry=None)
+</code></pre>
+<p>Retries are logged at the debug level, including the attempt number and the delay before the next attempt, so you can verify the policy in your own logs.</p>
+</article>
+<nav class="md-footer-nav"><a href="/sdk/quickstart/">Previous: Quickstart</a> <a href="/sdk/timeouts/">Next: Timeouts</a></nav>
+</main>
+</div>
+<footer class="md-footer"><p>Copyright 2026 Acme Inc. Made with a static site generator.</p><a href="/privacy/">Privacy</a></footer>
+</body>
+</html>

@@ -1,0 +1,255 @@
+# pagequorum
+
+**Accurate web-page extraction for RAG.** Several proven extractors vote on every
+block of a page; only what they agree on is kept. The result keeps its structure
+(headings, tables, code, lists) as clean Markdown, split into citation-ready chunks.
+
+```bash
+pagequorum scrape https://docs.python.org/3/library/json.html
+pagequorum crawl https://www.python-httpx.org/ -o out/ --max-pages 50
+pagequorum serve        # local playground + HTTP API: scrape, crawl, map
+```
+
+## Why
+
+Getting the main text out of a web page is the step most RAG pipelines get
+quietly wrong. Navigation menus, cookie banners, "related stories" and footers
+leak into the index, while code blocks, tables and headings get flattened or dropped.
+Each popular extractor has its own blind spots, and none tells you when it failed.
+
+pagequorum does not add yet another heuristic. It asks several independent
+extractors and keeps only the parts they agree on:
+
+| voter | what it is |
+|---|---|
+| [trafilatura](https://github.com/adbar/trafilatura) | strongest open-source extractor on public benchmarks |
+| [readability](https://github.com/buriy/python-readability) | Python port of Mozilla Readability (Firefox reader view) |
+| [resiliparse](https://github.com/chatnoir-eu/chatnoir-resiliparse) | main-content extraction from the Webis group (ChatNoir search engine) |
+| JSON-LD `articleBody` | the publisher's own article text, when the page has it |
+| [jusText](https://github.com/miso-belica/jusText) | available, off by default (it lowered accuracy on the dev split) |
+
+## How it works
+
+1. **Fetch** politely: robots.txt (RFC 9309), per-host delay and `Crawl-delay`,
+   retries with `Retry-After`, size limit, content-type check, optional cache.
+2. **Decode** like a browser: BOM → HTTP charset → `<meta>` → detection, with
+   WHATWG label mapping. A `charset=ISO-8859-1` header on a UTF-8 page is
+   corrected, so you don't get `â€™` instead of `’`.
+3. **Clean and segment** the DOM into blocks: paragraphs, headings, list items;
+   code blocks and data tables stay whole. Hidden elements, scripts and form
+   controls are removed. Inactive tab panels are kept, since they hold real
+   content like the "JavaScript" variant of a code sample.
+4. **Vote.** Each extractor's output is *aligned* with the page in document
+   order (`difflib.SequenceMatcher` over tokens). A block counts as covered by a
+   voter when at least half of its words are matched. Alignment matters: an
+   order-free "is this phrase anywhere in the output?" check wrongly credits menu
+   items and captions that repeat words of the article.
+5. **Decide.** A block needs at least 70% of the active voters' weight: all three
+   main voters agree, or 3 of 4 when JSON-LD is present. These safeguards keep this
+   strict rule from losing content:
+   - A voter that covers less than half of what the others cover is *set aside*
+     for that page, because it picked a sub-section (Readability does this on long
+     Sphinx docs pages).
+   - A code block or table that sits directly between kept blocks is rescued if
+     at least one voter kept it.
+   - A section heading most voters chose is kept when it sits inside kept text
+     and the voters agreed on another heading of the same level; a list, table or
+     code block that a kept sentence announces with a colon is kept if a voter
+     chose it. Headings left with an empty section are dropped.
+   - When a voter was set aside and only two remain, a run of blocks one of them
+     chose that sits between kept blocks is kept, unless it is navigation,
+     sidebar, footer or a caption. Two voters cannot outvote each other, and
+     a single miss would otherwise drop content, such as a whole API entry.
+6. **Render** the kept blocks from the same DOM as Markdown: `#` headings, nested
+   lists, fenced code with language, GitHub tables (rowspans repeated so each row
+   stands alone), block quotes. The page's H1 becomes the title and is not
+   repeated in the body. Docs-site details are handled too: permalink `¶` marks
+   are removed, API signatures become one code span, "Note"/"Warning" labels stay
+   attached to their paragraph, and footnotes that the kept text refers to are kept.
+   Wiki pages lose their "[edit]" links and v·t·e navbars, and reference/citation
+   lists are left out (they are bibliography, not article text).
+7. **Chunk** by headings. A table is never split mid-row (its header repeats in
+   each piece) and a code fence never mid-line. Each chunk records its heading
+   path, its exact character span in the Markdown, and a `#:~:text=` deep link
+   that opens the live page scrolled to the passage.
+
+Every page also reports a **consensus score**: the share of words that every
+active voter agreed on. Low consensus marks pages worth a human look.
+
+## Accuracy
+
+Measured on the [article-extraction-benchmark](https://github.com/scrapinghub/article-extraction-benchmark):
+181 real news and blog pages with human-labelled article text. The scoring is
+identical to the benchmark's own (token 4-gram precision/recall per page). Pages are
+split by id into **dev** (95 pages, the only ones used for every design and tuning
+decision) and **test** (86 held-out pages).
+
+| system | F1 (all) | **F1 test (held out)** | precision (all) | recall (all) | exact match |
+|---|---|---|---|---|---|
+| **pagequorum** | **0.970** ± 0.006 | **0.963** | **0.969** ± 0.006 | 0.970 ± 0.007 | **0.436** |
+| trafilatura 2.3 | 0.960 ± 0.005 | 0.963 | 0.942 ± 0.008 | 0.978 ± 0.006 | 0.293 |
+| readability-lxml 0.9 | 0.954 ± 0.007 | 0.950 | 0.935 ± 0.008 | 0.974 ± 0.007 | 0.298 |
+| resiliparse 2.0 | 0.927 ± 0.005 | 0.928 | 0.879 ± 0.008 | 0.981 ± 0.004 | 0.033 |
+| jusText 3.0 | 0.823 ± 0.015 | 0.813 | 0.858 ± 0.016 | 0.791 ± 0.024 | 0.039 |
+
+What this does and does not show:
+
+- On held-out pages pagequorum **ties** trafilatura on F1. The "all pages"
+  lead includes the dev pages it was tuned on, so don't read it as a win.
+- The real gain is **precision**: 0.969 vs 0.942, i.e. less boilerplate in your
+  index. The text is also exactly the human-labelled article body on **44%** of
+  pages vs 29%. The price is slightly lower recall (0.970 vs 0.978).
+- The consensus score separates failures: mean 0.75 on pages with F1 < 0.8,
+  0.89 on the rest.
+- The benchmark contains news and blogs only. Documentation pages, a major RAG
+  source, were checked by hand: Python docs, MkDocs sites, Wikipedia in English
+  and Hindi, and the fixtures in `tests/fixtures/`. There is no labelled
+  benchmark for them yet.
+
+Reproduce: `uv run python bench/download_aeb.py && uv run python bench/aeb.py`.
+[`bench/README.md`](bench/README.md) has the method and a log of everything
+tried, including what did not work.
+
+## Install
+
+```bash
+git clone <this repo> && cd pagequorum
+uv sync                      # or: pip install -e .
+# optional, the local web app:
+pip install -e '.[web]'      # or run it with: uv run --extra web pagequorum serve
+# optional, for JavaScript-rendered pages:
+pip install -e '.[render]' && playwright install chromium
+```
+
+Python 3.10+.
+
+## Use
+
+### Command line
+
+```bash
+# Markdown to stdout
+pagequorum scrape https://example.com/article
+
+# Plain text, full JSON (document + chunks), or one JSON chunk per line
+pagequorum scrape URL -f text
+pagequorum scrape URL -f json
+pagequorum scrape URL -f chunks --max-tokens 400 --overlap 50
+
+# Crawl a site section (same site, under the start URL's directory). Links inside each
+# page's main content are followed before menu/sidebar/footer links;
+# --content-links-only never follows the latter.
+pagequorum crawl https://docs.example.com/guide/ -o out/ --max-pages 200 --delay 1
+#   out/pages/*.md  out/documents.jsonl  out/chunks.jsonl  out/crawl_log.jsonl
+
+# A local file, with an explanation of every keep/drop decision
+pagequorum extract page.html --url https://example.com/page --explain
+```
+
+### Web app and HTTP API
+
+```bash
+uv run --extra web pagequorum serve --open     # http://127.0.0.1:8000
+```
+
+A local playground with three modes:
+
+| mode | what it does |
+|---|---|
+| **Scrape** | One page: summary (words kept, chunks, agreement, each extractor's verdict) and tabs for the clean text, the chunks, every kept/removed block with its votes, links, Markdown and the raw JSON |
+| **Crawl** | A site section as a background job: live progress, a table of pages (click one to read it), skipped pages with the reason, and one-click `chunks.jsonl` / `documents.jsonl` downloads |
+| **Map** | Every page URL from the sitemap and the start page's links in a few seconds, with a filter and a "Scrape →" button per URL |
+
+"Get code" shows the request you are about to make as cURL, Python, JavaScript or
+Python-library code. The same API is documented at `/redoc` (reference) and `/docs`
+(try requests in the browser):
+
+| endpoint | |
+|---|---|
+| `POST /api/scrape` | `{"url": ...}` or `{"html": ..., "url": ...}`, plus `max_tokens`, `overlap`, `links`, `images` |
+| `POST /api/map` | `{"url": ..., "limit": 500, "use_sitemap": true, "whole_site": true}` |
+| `POST /api/crawl` | `{"url": ..., "max_pages": 10, "max_depth": 2, "include": regex, "exclude": regex}` → `{"id"}` |
+| `GET /api/crawl/{id}` | status, counters, and the pages done so far (`?since=n` for new ones only) |
+| `GET /api/crawl/{id}/chunks.jsonl` | every chunk of the crawl; also `documents.jsonl` and `pages/{n}` |
+| `DELETE /api/crawl/{id}` | stop a crawl |
+
+The server listens on 127.0.0.1 only. It fetches any URL it is given, so don't
+expose it on a public network. Crawl jobs live in memory until the server stops.
+
+### Python
+
+```python
+import pagequorum as pq
+
+doc = pq.scrape("https://example.com/article")      # fetch + extract
+doc = pq.extract(html, url="https://example.com/x")  # already have the HTML
+
+doc.title, doc.author, doc.date, doc.language, doc.canonical_url
+doc.markdown                    # "# Title" + body as Markdown
+doc.text                        # plain body text
+doc.links                       # links inside the kept content, absolute
+doc.extraction                  # method, agreement (consensus score), each voter's status, warnings
+
+doc, blocks = pq.extract_explained(html, url=...)  # plus every block's keep/drop decision and votes
+
+for chunk in doc.chunks(max_tokens=512, overlap_tokens=0):
+    chunk.text                  # == doc.markdown[chunk.start:chunk.end] (tables/code split excepted)
+    chunk.heading_path          # ["Title", "Section", "Subsection"]
+    chunk.contextualized()      # title + section path + text, ready to embed
+    chunk.citation_url          # https://...#:~:text=First%20words%20of%20the%20passage
+
+for event in pq.crawl("https://docs.example.com/guide/", max_pages=100):
+    if event.document:
+        ...
+
+# Exact token counts for your model (default is a conservative bytes/4 estimate):
+import tiktoken
+enc = tiktoken.get_encoding("o200k_base")
+doc.chunks(max_tokens=512, token_counter=lambda s: len(enc.encode(s)))
+```
+
+Options (`pq.ExtractOptions`): `links=True` keeps `[text](url)`, `images=True`
+keeps `![alt](src)`, `formatting=False` drops `**bold**`/`*italic*`/`` `code` ``,
+`voters=`, `weights=`, `threshold=`, `outlier_ratio=` change the voting.
+
+## Being a good citizen
+
+robots.txt is honoured by default. `--no-robots` exists for sites you own or have
+permission to crawl, and it prints a warning. The default delay is 1 second per
+host, raised when robots.txt sets a `Crawl-delay`. Check the site's terms before
+crawling it.
+
+## Limitations
+
+- Evaluation covers news and blog articles. Documentation, forums, product pages
+  and listing pages have no labelled benchmark here yet.
+- JavaScript rendering (`--render`) is wired up but has **not been tested**, as
+  Playwright is an optional install. Without it, app-shell pages get a warning
+  instead of silently empty output.
+- HTML only: PDFs and other formats are reported as skipped.
+- Footnotes marked up as footnotes (Sphinx, pandoc) are kept when the text refers
+  to them. Wikipedia-style citation markers such as `[1]` are kept as on the page,
+  but the reference and notes lists are dropped.
+- A block only one extractor chose is dropped. On Wikipedia this can lose a
+  section heading or paragraph (e.g. one "Culture" heading on Hindi Wikipedia's
+  भारत page) and link-heavy lists that no sentence announces.
+- CJK text is tokenized per character for voting; this has not been evaluated.
+- Speed: about 50 ms per page for extraction on a laptop (four extractors plus
+  alignment). The crawl is sequential and polite by design.
+
+## Roadmap
+
+- A labelled benchmark for documentation pages (Sphinx, MkDocs, Docusaurus, GitBook).
+- Site-level boilerplate removal across a crawl (blocks repeated on every page).
+- Indic-language extraction evaluation (Hindi and other Devanagari news sites).
+- PDF support and async crawling of many hosts at once.
+
+## Credits
+
+Built on trafilatura, readability-lxml, resiliparse, jusText, lxml, httpx and
+Protego, and evaluated with the article-extraction-benchmark by Zyte (MIT).
+The ensemble idea follows Bevendorff et al., *An Empirical Comparison of Web
+Content Extraction Algorithms* (SIGIR 2023), which found that combining
+extractors beats any single one.
+
+MIT licence.

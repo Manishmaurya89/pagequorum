@@ -1,0 +1,217 @@
+"""Crawl one site section breadth-first and extract every page.
+
+Scope: same site (``www.`` ignored) and under the start URL's directory, so
+crawling ``https://docs.example.com/guide/intro`` stays inside ``/guide/``.
+Pages are discovered from the sitemap(s) listed in robots.txt (or /sitemap.xml)
+and from links on fetched pages. Links inside a page's extracted content are
+followed before links elsewhere on the page (menus, sidebars, footers), so a small
+``max_pages`` budget goes to related pages rather than "About" and "Help". Duplicates are skipped by normalised URL, by
+redirect target, by ``<link rel=canonical>`` and by identical extracted text.
+"""
+
+from __future__ import annotations
+
+import gzip
+import hashlib
+import re
+from collections import deque
+from dataclasses import dataclass
+from typing import Iterator
+from urllib.parse import urljoin, urlsplit
+
+import httpx
+from lxml import etree
+
+from . import dom
+from .extract import ExtractOptions, extract
+from .fetch import Fetcher
+from .metadata import base_url
+from .models import Document
+from .urls import in_scope, looks_like_page, normalize_url, scope_prefix
+
+_XML_PARSER = etree.XMLParser(resolve_entities=False, no_network=True, recover=True, huge_tree=False)
+_MAX_SITEMAP_BYTES = 20_000_000
+
+
+@dataclass
+class CrawlEvent:
+    url: str
+    depth: int
+    document: Document | None = None
+    skipped: str | None = None
+    error: str | None = None
+
+
+def page_links(html: str, url: str) -> list[str]:
+    tree = dom.parse_html(html)
+    base = base_url(tree, url) or url
+    out = []
+    for a in tree.xpath("//a[@href]"):
+        href = (a.get("href") or "").strip()
+        if not href or href.startswith(("#", "javascript:", "mailto:", "tel:", "data:")):
+            continue
+        out.append(urljoin(base, href))
+    return out
+
+
+def _sitemap_urls(fetcher: Fetcher, start_url: str, limit: int) -> list[str]:
+    origin = "{0.scheme}://{0.netloc}".format(urlsplit(start_url))
+    queue = list(fetcher.robots.sitemaps(start_url)) or [origin + "/sitemap.xml"]
+    seen_maps: set[str] = set()
+    found: list[str] = []
+    while queue and len(seen_maps) < 20 and len(found) < limit:
+        sm = queue.pop(0)
+        if sm in seen_maps:
+            continue
+        seen_maps.add(sm)
+        if fetcher.respect_robots and not fetcher.robots.allowed(sm):
+            continue
+        try:
+            fetcher._wait_turn(sm)
+            r = fetcher.client.get(sm)
+        except httpx.HTTPError:
+            continue
+        if r.status_code >= 400 or len(r.content) > _MAX_SITEMAP_BYTES:
+            continue
+        body = r.content
+        if body[:2] == b"\x1f\x8b":
+            try:
+                body = gzip.decompress(body)[:_MAX_SITEMAP_BYTES]
+            except OSError:
+                continue
+        try:
+            root = etree.fromstring(body, parser=_XML_PARSER)
+        except etree.XMLSyntaxError:
+            continue
+        if root is None:
+            continue
+        locs = [(el.text or "").strip() for el in root.iter() if isinstance(el.tag, str) and el.tag.endswith("loc")]
+        if root.tag.endswith("sitemapindex"):
+            queue.extend(loc for loc in locs if loc)
+        else:
+            found.extend(loc for loc in locs if loc)
+    return found[:limit]
+
+
+def crawl(
+    start_url: str,
+    max_pages: int = 50,
+    max_depth: int = 3,
+    fetcher: Fetcher | None = None,
+    options: ExtractOptions | None = None,
+    use_sitemap: bool = True,
+    include: str | None = None,
+    exclude: str | None = None,
+    content_links_only: bool = False,
+) -> Iterator[CrawlEvent]:
+    """Crawl breadth-first from ``start_url``. ``content_links_only`` follows only links
+    found in the extracted main content, never menu/sidebar/footer links."""
+    own = fetcher is None
+    f = fetcher or Fetcher()
+    prefix = scope_prefix(start_url)
+    inc = re.compile(include) if include else None
+    exc = re.compile(exclude) if exclude else None
+
+    def wanted(url: str) -> bool:
+        return (in_scope(url, start_url, prefix) and looks_like_page(url)
+                and (not inc or inc.search(url)) and not (exc and exc.search(url)))
+
+    queue: deque[tuple[str, int]] = deque([(start_url, 0)])
+    seen = {normalize_url(start_url)}
+    done: dict[str, str] = {}  # normalised url / canonical -> url it was extracted from
+    hashes: dict[str, str] = {}
+    pages = attempts = 0
+    try:
+        if use_sitemap:
+            for loc in _sitemap_urls(f, start_url, limit=max_pages * 5):
+                n = normalize_url(loc)
+                if n not in seen and wanted(loc):
+                    seen.add(n)
+                    queue.append((loc, 1))
+        while queue and pages < max_pages and attempts < max_pages * 3:
+            url, depth = queue.popleft()
+            attempts += 1
+            res = f.fetch(url)
+            if not res.ok:
+                yield CrawlEvent(url, depth, skipped=res.skipped, error=res.error)
+                continue
+            final = res.final_url or url
+            n_final = normalize_url(final)
+            if n_final in done and done[n_final] != url:
+                yield CrawlEvent(url, depth, skipped=f"redirects to already crawled {done[n_final]}")
+                continue
+            doc = extract(res.html, url=final, options=options, fetch=res.info())
+            canon = normalize_url(doc.canonical_url) if doc.canonical_url else None
+            if canon and canon != n_final and canon in done:
+                yield CrawlEvent(url, depth, skipped=f"canonical duplicate of {done[canon]}")
+                continue
+            digest = hashlib.sha256(doc.text.encode("utf-8")).hexdigest()
+            if doc.text and digest in hashes:
+                yield CrawlEvent(url, depth, skipped=f"same content as {hashes[digest]}")
+                continue
+            done[n_final] = url
+            if canon:
+                done[canon] = url
+                seen.add(canon)
+            if doc.text:
+                hashes[digest] = url
+            pages += 1
+            yield CrawlEvent(url, depth, document=doc)
+            if depth < max_depth:
+                content = [l["url"] for l in doc.links]
+                rest = [] if content_links_only else page_links(res.html, final)
+                for link in content + rest:  # content links first
+                    n = normalize_url(link)
+                    if n not in seen and wanted(link):
+                        seen.add(n)
+                        queue.append((link, depth + 1))
+    finally:
+        if own:
+            f.close()
+
+
+@dataclass
+class MappedUrl:
+    url: str
+    source: str  # "sitemap" or "page"
+
+
+def map_site(start_url: str, fetcher: Fetcher | None = None, limit: int = 500, use_sitemap: bool = True,
+             whole_site: bool = True) -> list[MappedUrl]:
+    """List a site's page URLs quickly, without extracting them: the sitemap(s) from
+    robots.txt (or /sitemap.xml) plus the links on the start page.
+
+    ``whole_site=False`` keeps only URLs under the start URL's directory, the same
+    scope :func:`crawl` uses. Non-HTML files (PDF, images, ...) are left out.
+    """
+    own = fetcher is None
+    f = fetcher or Fetcher()
+    prefix = "/" if whole_site else scope_prefix(start_url)
+    seen: set[str] = set()
+    out: list[MappedUrl] = []
+
+    def add(url: str, source: str) -> None:
+        url = url.split("#", 1)[0]
+        n = normalize_url(url)
+        if n in seen or not in_scope(url, start_url, prefix) or not looks_like_page(url):
+            return
+        seen.add(n)
+        out.append(MappedUrl(url, source))
+
+    try:
+        add(start_url, "page")
+        if use_sitemap:
+            for loc in _sitemap_urls(f, start_url, limit=limit * 2):
+                add(loc, "sitemap")
+                if len(out) >= limit:
+                    return out[:limit]
+        res = f.fetch(start_url)
+        if res.ok:
+            for link in page_links(res.html, res.final_url or start_url):
+                add(link, "page")
+                if len(out) >= limit:
+                    break
+        return out[:limit]
+    finally:
+        if own:
+            f.close()

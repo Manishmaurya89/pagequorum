@@ -1,0 +1,28 @@
+<!doctype html><html lang="en"><head><title>How Solar Panels Work | Energy Weekly</title>
+<meta name="description" content="A guide."></head><body>
+<header><nav><ul><li><a href="/">Home</a></li><li><a href="/news">News</a></li><li><a href="/about">About us</a></li></ul></nav></header>
+<div class="cookie-banner">We use cookies to improve your experience. <button>Accept</button></div>
+<main><article>
+<h1>How Solar Panels Work</h1>
+<p class="byline">By Jane Doe, March 3 2024</p>
+<p>Solar panels convert sunlight into electricity using photovoltaic cells made of silicon. When photons strike the cell, they knock electrons loose, creating a flow of current that can power homes and businesses.</p>
+<h2>Efficiency</h2>
+<p>Modern residential panels typically reach an efficiency between 18 and 23 percent, while laboratory cells have exceeded 47 percent using multi-junction designs that stack several materials together.</p>
+<table><thead><tr><th>Panel type</th><th>Efficiency</th><th>Cost per watt</th></tr></thead>
+<tbody><tr><td>Monocrystalline</td><td>20-23%</td><td>$1.00</td></tr><tr><td>Polycrystalline</td><td>15-18%</td><td>$0.80</td></tr><tr><td>Thin film</td><td>10-13%</td><td>$0.70</td></tr></tbody></table>
+<h2>Installing them</h2>
+<p>Installation usually takes one to three days. The steps are:</p>
+<ol><li>Site survey and shading analysis of the roof</li><li>Mounting the racking system to the rafters</li><li>Wiring the inverter and connecting to the grid</li></ol>
+<pre><code class="language-python">def output(kw, hours):
+    return kw * hours  # kWh per day
+</code></pre>
+<p>Most systems pay for themselves within six to ten years depending on local electricity prices and incentives available in your region.</p>
+</article>
+<aside><h3>Related stories</h3><ul><li><a href="/a">Wind farms expand offshore</a></li><li><a href="/b">Battery prices fall again</a></li></ul></aside>
+</main>
+<footer><p>© 2024 Energy Weekly. All rights reserved.</p><a href="/privacy">Privacy policy</a></footer>
+</body></html>"""
+doc = extract(html, url="https://example.com/solar")
+print(doc.markdown)
+print("----", doc.title, "|", doc.language, "|", doc.extraction)
+for r in explain(html, url="https://example.com/solar"):
