@@ -224,3 +224,61 @@ def test_oversized_and_zip_bomb_sitemaps_are_skipped(monkeypatch):
     robots = "User-agent: *\nAllow: /\n" + "".join(f"Sitemap: https://ex.com{p}\n" for p in routes)
     found = crawl_mod._sitemap_urls(fetcher(site(routes, robots=(200, robots))), "https://ex.com/", 100)
     assert found == ["https://ex.com/good"]
+
+
+def streamed(body: bytes, encoding: str | None = None, seen: list | None = None):
+    """A route served as a real stream (as from the network), optionally compressed."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        if seen is not None:
+            seen.append(request.headers.get("accept-encoding"))
+        headers = {"content-type": HTML} | ({"content-encoding": encoding} if encoding else {})
+        return httpx.Response(200, headers=headers, stream=httpx.ByteStream(body))
+    return handler
+
+
+def test_compressed_pages_are_decoded():
+    import gzip
+    import zlib
+
+    page = article("Compressed").encode()
+    raw = zlib.compressobj(wbits=-zlib.MAX_WBITS)
+    routes = {
+        "/gzip": streamed(gzip.compress(page), "gzip"),
+        "/deflate": streamed(zlib.compress(page), "deflate"),
+        "/raw-deflate": streamed(raw.compress(page) + raw.flush(), "deflate"),
+        "/plain": streamed(page),
+    }
+    f = fetcher(site(routes))
+    for path in routes:
+        res = f.fetch(f"https://ex.com{path}")
+        assert res.ok and "Compressed paragraph 4" in res.html, path
+
+
+def test_zip_bomb_page_is_stopped_at_the_size_limit():
+    import tracemalloc
+    import zlib
+
+    gz = zlib.compressobj(9, zlib.DEFLATED, 16 + zlib.MAX_WBITS)
+    zeros = b"\0" * 1_000_000
+    bomb = b"".join(gz.compress(zeros) for _ in range(200)) + gz.flush()  # ~200 KB -> 200 MB
+    f = fetcher(site({"/bomb": streamed(bomb, "gzip")}), max_bytes=1_000_000)
+    tracemalloc.start()
+    res = f.fetch("https://ex.com/bomb")
+    peak = tracemalloc.get_traced_memory()[1]
+    tracemalloc.stop()
+    assert res.skipped == "response larger than 1000000 bytes"
+    assert peak < 20_000_000  # inflated in bounded steps, never all 200 MB
+
+
+def test_unsupported_or_corrupt_encoding_is_an_error_not_a_crash():
+    import gzip
+
+    seen: list = []
+    routes = {"/br": streamed(b"\x1b\x00\x00", "br", seen),
+              "/bad": streamed(gzip.compress(article("X").encode())[:40] + b"garbage" * 20, "gzip")}
+    f = fetcher(site(routes))
+    br = f.fetch("https://ex.com/br")
+    assert not br.ok and "unsupported content-encoding" in br.error
+    assert seen == ["gzip, deflate"]  # brotli is never asked for
+    bad = f.fetch("https://ex.com/bad")
+    assert not bad.ok and "could not decode" in bad.error

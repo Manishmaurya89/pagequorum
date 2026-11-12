@@ -7,7 +7,9 @@
 * retries on network errors, 429 and 5xx with exponential backoff, honouring
   ``Retry-After`` (capped),
 * bodies over ``max_bytes`` are refused rather than silently truncated,
-  and robots.txt is read up to 500 KiB (the minimum RFC 9309 requires),
+  and robots.txt is read up to 500 KiB (the minimum RFC 9309 requires);
+  compressed bodies are inflated a bounded step at a time, so a small
+  "zip bomb" is stopped at the limit instead of filling memory,
 * non-HTML responses are reported as skipped, never fed to the extractor,
 * bytes are decoded the way a browser would (see ``encoding.py``),
 * an optional on-disk cache makes re-runs reproducible and free.
@@ -21,6 +23,7 @@ import json
 import random
 import threading
 import time
+import zlib
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -37,22 +40,73 @@ RETRY_STATUS = {429, 500, 502, 503, 504}
 ROBOTS_MAX_BYTES = 500 * 1024  # RFC 9309 2.5: parse at least 500 KiB; anything after it is ignored
 
 
+# Only encodings decoded below are asked for: httpx would also offer brotli (when it is
+# installed) and inflate every network chunk in one unbounded step.
+ACCEPT_ENCODING = "gzip, deflate"
+_GZIP_WBITS = 16 + zlib.MAX_WBITS
+
+
+def _deflate_wbits(head: bytes) -> int:
+    """"deflate" should be zlib-wrapped (RFC 9110), but some servers send raw deflate."""
+    if len(head) >= 2 and head[0] & 0x0F == 8 and ((head[0] << 8) | head[1]) % 31 == 0:
+        return zlib.MAX_WBITS
+    return -zlib.MAX_WBITS
+
+
+def read_body(r: httpx.Response, cap: int) -> tuple[bytes, bool]:
+    """Read a streamed response's body, decoded, but never more than ``cap`` bytes of it.
+
+    Returns the body and whether there was more than ``cap``. Content-Encoding is undone
+    here rather than by httpx, a bounded step at a time, and the raw size is capped too,
+    so neither a huge body nor a tiny one that inflates to gigabytes can exhaust memory.
+    Raises ``httpx.DecodingError`` for an encoding it does not handle or corrupt data.
+    """
+    if r.is_stream_consumed:  # an in-memory response (a test transport): httpx already read it
+        body = r.content
+        return body[:cap], len(body) > cap
+    codings = [c.strip().lower() for c in r.headers.get("content-encoding", "").split(",")]
+    codings = [c for c in codings if c and c != "identity"]
+    if len(codings) > 1 or (codings and codings[0] not in ("gzip", "x-gzip", "deflate")):
+        raise httpx.DecodingError(f"unsupported content-encoding {', '.join(codings)!r}", request=r.request)
+    coding = codings[0] if codings else None
+    inflater = zlib.decompressobj(_GZIP_WBITS) if coding in ("gzip", "x-gzip") else None
+    out = bytearray()
+    raw_size = 0
+    try:
+        for raw in r.iter_raw():
+            raw_size += len(raw)
+            if raw_size > cap:  # compressed data bigger than the cap: the body is too
+                return bytes(out[:cap]), True
+            if coding is None:
+                out += raw
+            else:
+                if inflater is None:  # deflate: pick the variant from the first bytes
+                    inflater = zlib.decompressobj(_deflate_wbits(raw))
+                data = raw
+                while data and not inflater.eof:
+                    out += inflater.decompress(data, cap + 1 - len(out))  # never 0 = unbounded
+                    if len(out) > cap:
+                        return bytes(out[:cap]), True
+                    data = inflater.unconsumed_tail
+            if len(out) > cap:
+                return bytes(out[:cap]), True
+        if inflater is not None:
+            out += inflater.flush()
+    except zlib.error as exc:
+        raise httpx.DecodingError(f"corrupt {coding} data: {exc}", request=r.request) from exc
+    if len(out) > cap:
+        return bytes(out[:cap]), True
+    return bytes(out), False
+
+
 def read_capped(client: httpx.Client, url: str, cap: int, **kwargs) -> tuple[httpx.Response, bytes, bool]:
-    """GET ``url`` but read at most ``cap`` bytes of the (decoded) body, so a huge or
-    endless response cannot exhaust memory.
+    """GET ``url`` and read at most ``cap`` bytes of its decoded body (see :func:`read_body`).
 
     Returns the response, the body read and whether it was cut off at ``cap``.
     """
-    chunks: list[bytes] = []
-    size = 0
     with client.stream("GET", url, **kwargs) as r:
-        for chunk in r.iter_bytes():
-            if size + len(chunk) > cap:
-                chunks.append(chunk[: cap - size])
-                return r, b"".join(chunks), True
-            chunks.append(chunk)
-            size += len(chunk)
-    return r, b"".join(chunks), False
+        body, cut = read_body(r, cap)
+    return r, body, cut
 
 
 @dataclass
@@ -171,6 +225,7 @@ class Fetcher:
                 "User-Agent": user_agent,
                 "Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.5",
                 "Accept-Language": "en;q=0.9,*;q=0.5",
+                "Accept-Encoding": ACCEPT_ENCODING,
             },
             follow_redirects=True,
             max_redirects=10,
@@ -272,14 +327,14 @@ class Fetcher:
             if declared > self.max_bytes:
                 res.skipped = f"response larger than {self.max_bytes} bytes"
                 return res, None
-            chunks, size = [], 0
-            for chunk in r.iter_bytes():
-                size += len(chunk)
-                if size > self.max_bytes:
-                    res.skipped = f"response larger than {self.max_bytes} bytes"
-                    return res, None
-                chunks.append(chunk)
-        body = b"".join(chunks)
+            try:
+                body, too_big = read_body(r, self.max_bytes)
+            except httpx.DecodingError as exc:  # retrying would not help
+                res.error = f"could not decode the response ({exc})"
+                return res, None
+            if too_big:
+                res.skipped = f"response larger than {self.max_bytes} bytes"
+                return res, None
         mime = (ctype or "").split(";")[0].strip().lower()
         if mime and mime not in HTML_TYPES:
             res.skipped = f"not HTML (content-type {mime})"
