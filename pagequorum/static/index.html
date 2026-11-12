@@ -627,10 +627,16 @@ footer.site .in .word em, footer.site .word em.in { background-size: 100% 100%; 
   const state = { mode: "scrape", lang: "curl", scrape: null, filter: "all", job: null, poll: null, map: null };
 
   // ---------- helpers ----------
+  // Links come from scraped pages: only let through ones that cannot run script.
+  const SAFE_PROTOCOLS = new Set(["http:", "https:", "mailto:", "blob:"]);
+  function safeHref(v) {
+    try { return SAFE_PROTOCOLS.has(new URL(v, location.href).protocol); } catch { return false; }
+  }
   function el(tag, attrs, ...children) {
     const node = document.createElement(tag);
     for (const [k, v] of Object.entries(attrs || {})) {
       if (v == null) continue;
+      if (k === "href" && !safeHref(v)) continue;
       if (k === "class") node.className = v;
       else if (k === "text") node.textContent = v;
       else if (k.startsWith("on")) node.addEventListener(k.slice(2), v);

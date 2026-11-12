@@ -13,7 +13,8 @@ from pagequorum.web import create_app  # noqa: E402
 def client(handler=None) -> TestClient:
     transport = httpx.MockTransport(handler or (lambda req: httpx.Response(404)))
     return TestClient(create_app(Fetcher(transport=transport, delay=0),
-                                 fetcher_factory=lambda: Fetcher(transport=transport, delay=0)))
+                                 fetcher_factory=lambda: Fetcher(transport=transport, delay=0)),
+                      base_url="http://localhost")
 
 
 def test_index_page_is_served():
@@ -121,3 +122,18 @@ def test_crawl_job_runs_in_background_and_collects_chunks(article_html):
 def test_crawl_rejects_bad_regex():
     r = client().post("/api/crawl", json={"url": "https://ex.com/", "include": "(unclosed"})
     assert r.status_code == 422 and "regular expression" in r.text
+
+
+def test_requests_naming_another_host_are_refused():
+    # DNS rebinding: a page on attacker.example re-points its name at 127.0.0.1 and calls the API
+    c = client()
+    assert c.get("/api/health").status_code == 200
+    assert c.get("/api/health", headers={"host": "127.0.0.1:8000"}).status_code == 200
+    assert c.get("/api/health", headers={"host": "attacker.example:8000"}).status_code == 400
+    assert c.post("/api/scrape", json={"html": "<p>x</p>"}, headers={"host": "attacker.example"}).status_code == 400
+
+
+def test_non_json_bodies_are_rejected():
+    # a plain cross-site form post cannot send application/json, so it cannot drive the API
+    r = client().post("/api/scrape", content='{"html": "<p>x</p>"}', headers={"content-type": "text/plain"})
+    assert r.status_code == 422

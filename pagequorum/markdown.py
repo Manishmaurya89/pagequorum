@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
 from lxml import html as lxml_html
 
@@ -18,6 +18,9 @@ from .dom import HEADINGS, Block, is_block_element, pre_text
 from .text import normalize_ws
 
 _WS = re.compile(r"[ \t\r\f\v\n]+")
+_URL_TAB_NL = re.compile(r"[\t\n\r]")
+_C0_AND_SPACE = "".join(map(chr, range(0x21)))  # what the WHATWG URL parser strips from both ends
+_LINK_SCHEMES = {"http", "https", "mailto"}
 _LANG_CLASS = re.compile(r"(?:^|\s)(?:language|lang|highlight-source|highlight)-([\w+#.-]+)", re.I)
 _NEEDS_ESCAPE = re.compile(r"^(#|>|[-+*]\s|\d+[.)]\s|\||[-=*_]{3,}\s*$)")
 _LIST_START = re.compile(r"^([-+*]|\d+[.)]) ")
@@ -83,6 +86,26 @@ class Renderer:
     def _abs(self, href: str) -> str:
         return urljoin(self.base_url, href) if self.base_url else href
 
+    def _link_url(self, href: str) -> str | None:
+        """Absolute URL of a link worth keeping, or None for in-page anchors, malformed
+        URLs and any scheme other than http(s)/mailto (``javascript:``, ``data:``, ...).
+
+        Browsers drop surrounding control characters and spaces, and tabs/newlines
+        anywhere, before reading the scheme (so ``java\tscript:`` still runs); the same
+        clean-up is done here before the scheme is checked.
+        """
+        href = _URL_TAB_NL.sub("", href).strip(_C0_AND_SPACE)
+        if not href or href.startswith("#"):
+            return None
+        try:
+            url = self._abs(href)
+            scheme = urlsplit(url).scheme.lower()
+        except ValueError:  # e.g. an unbalanced "[" in the host
+            return None
+        if scheme in _LINK_SCHEMES or (not scheme and not self.base_url):
+            return url
+        return None
+
     @staticmethod
     def _space(s: str) -> str:
         return _WS.sub(" ", s)
@@ -139,10 +162,9 @@ class Renderer:
         if tag in ("em", "i"):
             return self._wrap(inner, "*")
         if tag == "a":
-            href = (el.get("href") or "").strip()
+            url = self._link_url(el.get("href") or "")
             text = normalize_ws(inner)
-            if href and not href.lower().startswith(("javascript:", "#")):
-                url = self._abs(href)
+            if url:
                 if text:
                     self.links.append(Link(normalize_ws(el.text_content()), url))
                 if self.opts.links and not self.opts.plain and text:

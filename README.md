@@ -174,7 +174,10 @@ Python-library code. The same API is documented at `/redoc` (reference) and `/do
 | `DELETE /api/crawl/{id}` | stop a crawl |
 
 The server listens on 127.0.0.1 only. It fetches any URL it is given, so don't
-expose it on a public network. Crawl jobs live in memory until the server stops.
+expose it on a public network. It also answers only requests addressed to
+`localhost`, `127.0.0.1` or `[::1]`, so a website you visit can't reach it through
+DNS rebinding. Links taken from pages keep only `http`, `https` and `mailto` URLs.
+Crawl jobs live in memory until the server stops.
 
 ### Python
 

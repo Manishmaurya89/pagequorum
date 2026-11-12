@@ -11,9 +11,9 @@ redirect target, by ``<link rel=canonical>`` and by identical extracted text.
 
 from __future__ import annotations
 
-import gzip
 import hashlib
 import re
+import zlib
 from collections import deque
 from dataclasses import dataclass
 from typing import Iterator
@@ -24,7 +24,7 @@ from lxml import etree
 
 from . import dom
 from .extract import ExtractOptions, extract
-from .fetch import Fetcher
+from .fetch import Fetcher, read_capped
 from .metadata import base_url
 from .models import Document
 from .urls import in_scope, looks_like_page, normalize_url, scope_prefix
@@ -54,6 +54,19 @@ def page_links(html: str, url: str) -> list[str]:
     return out
 
 
+def _gunzip_capped(body: bytes, cap: int) -> bytes | None:
+    """Decompress a gzip sitemap, giving up (None) if it is corrupt, truncated or would
+    expand past ``cap`` bytes, so a small "zip bomb" cannot exhaust memory."""
+    d = zlib.decompressobj(16 + zlib.MAX_WBITS)
+    try:
+        out = d.decompress(body, cap + 1)
+    except zlib.error:
+        return None
+    if len(out) > cap or d.unconsumed_tail or not d.eof:
+        return None
+    return out
+
+
 def _sitemap_urls(fetcher: Fetcher, start_url: str, limit: int) -> list[str]:
     origin = "{0.scheme}://{0.netloc}".format(urlsplit(start_url))
     queue = list(fetcher.robots.sitemaps(start_url)) or [origin + "/sitemap.xml"]
@@ -68,16 +81,14 @@ def _sitemap_urls(fetcher: Fetcher, start_url: str, limit: int) -> list[str]:
             continue
         try:
             fetcher._wait_turn(sm)
-            r = fetcher.client.get(sm)
+            r, body, too_big = read_capped(fetcher.client, sm, _MAX_SITEMAP_BYTES)
         except httpx.HTTPError:
             continue
-        if r.status_code >= 400 or len(r.content) > _MAX_SITEMAP_BYTES:
+        if r.status_code >= 400 or too_big:
             continue
-        body = r.content
-        if body[:2] == b"\x1f\x8b":
-            try:
-                body = gzip.decompress(body)[:_MAX_SITEMAP_BYTES]
-            except OSError:
+        if body[:2] == b"\x1f\x8b":  # a .xml.gz file (not HTTP Content-Encoding, which httpx undoes)
+            body = _gunzip_capped(body, _MAX_SITEMAP_BYTES)
+            if body is None:
                 continue
         try:
             root = etree.fromstring(body, parser=_XML_PARSER)

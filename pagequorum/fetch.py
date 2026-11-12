@@ -7,6 +7,7 @@
 * retries on network errors, 429 and 5xx with exponential backoff, honouring
   ``Retry-After`` (capped),
 * bodies over ``max_bytes`` are refused rather than silently truncated,
+  and robots.txt is read up to 500 KiB (the minimum RFC 9309 requires),
 * non-HTML responses are reported as skipped, never fed to the extractor,
 * bytes are decoded the way a browser would (see ``encoding.py``),
 * an optional on-disk cache makes re-runs reproducible and free.
@@ -33,6 +34,25 @@ from .encoding import decode_html
 DEFAULT_USER_AGENT = f"pagequorum/{__version__} (python; web-page extraction for RAG)"
 HTML_TYPES = ("text/html", "application/xhtml+xml")
 RETRY_STATUS = {429, 500, 502, 503, 504}
+ROBOTS_MAX_BYTES = 500 * 1024  # RFC 9309 2.5: parse at least 500 KiB; anything after it is ignored
+
+
+def read_capped(client: httpx.Client, url: str, cap: int, **kwargs) -> tuple[httpx.Response, bytes, bool]:
+    """GET ``url`` but read at most ``cap`` bytes of the (decoded) body, so a huge or
+    endless response cannot exhaust memory.
+
+    Returns the response, the body read and whether it was cut off at ``cap``.
+    """
+    chunks: list[bytes] = []
+    size = 0
+    with client.stream("GET", url, **kwargs) as r:
+        for chunk in r.iter_bytes():
+            if size + len(chunk) > cap:
+                chunks.append(chunk[: cap - size])
+                return r, b"".join(chunks), True
+            chunks.append(chunk)
+            size += len(chunk)
+    return r, b"".join(chunks), False
 
 
 @dataclass
@@ -77,7 +97,8 @@ class RobotsCache:
         origin = self._origin(url)
         if origin not in self._rules:
             try:
-                r = self._client.get(origin + "/robots.txt", follow_redirects=True, timeout=15)
+                r, body, _ = read_capped(self._client, origin + "/robots.txt", ROBOTS_MAX_BYTES,
+                                         follow_redirects=True, timeout=15)
                 if r.status_code >= 500:
                     self._rules[origin] = False
                     self._why[origin] = (f"the site's robots.txt returned HTTP {r.status_code}; "
@@ -85,7 +106,7 @@ class RobotsCache:
                 elif r.status_code >= 400:
                     self._rules[origin] = True
                 else:
-                    self._rules[origin] = Protego.parse(r.text)
+                    self._rules[origin] = Protego.parse(body.decode("utf-8", errors="replace"))  # RFC 9309: UTF-8
             except httpx.HTTPError as exc:
                 self._rules[origin] = False
                 self._why[origin] = f"could not reach the site ({type(exc).__name__}: {exc})"[:300]

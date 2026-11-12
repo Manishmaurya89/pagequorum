@@ -138,3 +138,15 @@ def test_picture_cell_spanning_rows_is_not_repeated():
              '<tr><td>2</td><td>Delhi</td></tr><tr><td>3</td><td>Pune</td></tr></table>')
     assert out.count("Mumbai skyline") == 1
     assert "| 2 | Delhi |  |" in out
+
+
+def test_links_that_could_run_script_are_dropped():
+    tree = dom.parse_html(
+        '<html><body><p>See <a href="java\tscript:alert(1)">a</a> <a href=" JavaScript:alert(2)">b</a> '
+        '<a href="data:text/html,x">c</a> <a href="vbscript:x">d</a> <a href="http://[::1">e</a> '
+        '<a href="/ok">f</a> <a href="mailto:x@example.com">g</a> <a href="#top">h</a></p></body></html>')
+    body = dom.body_of(tree)
+    blocks = dom.segment(body)
+    text, links = render(body, blocks, {b.index for b in blocks}, "https://example.com/a/", RenderOptions(links=True))
+    assert [l.url for l in links] == ["https://example.com/ok", "mailto:x@example.com"]
+    assert "script" not in text.lower() and "data:" not in text and "[f](https://example.com/ok)" in text

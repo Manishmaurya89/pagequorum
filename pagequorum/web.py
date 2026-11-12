@@ -5,7 +5,9 @@ every keep/drop decision.
     uv run --extra web pagequorum serve        # then open http://127.0.0.1:8000
 
 It binds to 127.0.0.1 by default. It fetches whatever URL it is given, so do not
-expose it on a public network.
+expose it on a public network. Requests must name this machine in their Host header
+(localhost, 127.0.0.1 or [::1]), which stops a web page you visit from reaching the
+API through DNS rebinding.
 """
 
 from __future__ import annotations
@@ -17,9 +19,10 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from importlib import resources
-from typing import Callable, Literal
+from typing import Callable, Iterable, Literal
 
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import HTMLResponse, PlainTextResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -32,6 +35,8 @@ from .scrape import ScrapeError, scrape_explained
 MAX_HTML_CHARS = 15_000_000
 BLOCK_TEXT_CHARS = 400
 MAX_JOBS = 20
+LOCAL_HOSTS = ("localhost", "127.0.0.1", "[::1]")
+_ANY_INTERFACE = ("0.0.0.0", "::", "")
 
 TAGS = [
     {"name": "scrape", "description": "Extract one page: clean Markdown, RAG chunks and every keep/drop decision."},
@@ -184,8 +189,13 @@ class CrawlJob:
             }
 
 
-def create_app(fetcher: Fetcher | None = None, fetcher_factory: Callable[[], Fetcher] = Fetcher) -> FastAPI:
-    """``fetcher`` serves Scrape and Map; each crawl job gets its own from ``fetcher_factory``."""
+def create_app(fetcher: Fetcher | None = None, fetcher_factory: Callable[[], Fetcher] = Fetcher,
+               allowed_hosts: Iterable[str] = LOCAL_HOSTS) -> FastAPI:
+    """``fetcher`` serves Scrape and Map; each crawl job gets its own from ``fetcher_factory``.
+
+    Only requests whose Host header is one of ``allowed_hosts`` are answered (``"*"``
+    turns the check off).
+    """
     app = FastAPI(
         title="pagequorum",
         version=__version__,
@@ -194,6 +204,7 @@ def create_app(fetcher: Fetcher | None = None, fetcher_factory: Callable[[], Fet
                     "page and only what they agree on is kept, as Markdown and citation-ready chunks.",
         openapi_tags=TAGS,
     )
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=list(allowed_hosts))
     app.state.fetcher = fetcher or Fetcher()
     jobs: dict[str, CrawlJob] = {}
     jobs_lock = threading.Lock()
@@ -318,4 +329,7 @@ def serve(host: str = "127.0.0.1", port: int = 8000, open_browser: bool = False)
         import webbrowser
 
         threading.Timer(1.0, webbrowser.open, args=(url,)).start()
-    uvicorn.run(create_app(), host=host, port=port, log_level="warning")
+    # Bound to every interface, the server can be reached under names we cannot know,
+    # so the Host check is off; the CLI warns about exposing it.
+    hosts = ["*"] if host in _ANY_INTERFACE else [*LOCAL_HOSTS, f"[{host}]" if ":" in host else host.lower()]
+    uvicorn.run(create_app(allowed_hosts=hosts), host=host, port=port, log_level="warning")
