@@ -27,7 +27,7 @@ from .extract import ExtractOptions, extract
 from .fetch import Fetcher, read_capped
 from .metadata import base_url
 from .models import Document
-from .urls import in_scope, looks_like_page, normalize_url, rebase_scope, scope_prefix
+from .urls import in_scope, looks_like_page, normalize_url, rebase_scope, related_site, scope_prefix
 
 _XML_PARSER = etree.XMLParser(resolve_entities=False, no_network=True, recover=True, huge_tree=False)
 _MAX_SITEMAP_BYTES = 20_000_000
@@ -142,7 +142,8 @@ def crawl(
             attempts += 1
             res = f.fetch(url)
             if attempts == 1:  # the start page: follow it if it moved, then queue the sitemap
-                if res.ok and res.final_url and normalize_url(res.final_url) != normalize_url(start_url):
+                if (res.ok and res.final_url and normalize_url(res.final_url) != normalize_url(start_url)
+                        and related_site(start_url, res.final_url)):
                     scope_url, prefix = res.final_url, rebase_scope(res.final_url, prefix)
                 if use_sitemap:
                     for loc in _sitemap_urls(f, scope_url, limit=max_pages * 5):
@@ -219,7 +220,7 @@ def map_site(start_url: str, fetcher: Fetcher | None = None, limit: int = 500, u
     try:
         res = f.fetch(start_url)
         final = (res.final_url or start_url) if res.ok else start_url
-        if normalize_url(final) != normalize_url(start_url):  # it redirected: map where it landed
+        if normalize_url(final) != normalize_url(start_url) and related_site(start_url, final):  # it moved
             scope_url = final
             if not whole_site:
                 prefix = rebase_scope(final, prefix)

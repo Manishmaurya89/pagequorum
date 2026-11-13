@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import posixpath
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -54,6 +55,33 @@ def scope_prefix(start_url: str) -> str:
     """The directory of the start URL: crawling /docs/intro.html stays under /docs/."""
     path = urlsplit(start_url).path or "/"
     return path if path.endswith("/") else path.rsplit("/", 1)[0] + "/"
+
+
+def _local_host(host: str) -> bool:
+    """IP addresses and names that point inside a network, never somewhere a public page should send a crawl."""
+    if host == "localhost" or host.endswith((".localhost", ".local", ".internal", ".lan")):
+        return True
+    try:
+        ipaddress.ip_address(host.strip("[]"))
+        return True  # any IP literal: a redirect to one is not "the same site moved"
+    except ValueError:
+        return False
+
+
+def related_site(start_url: str, final_url: str) -> bool:
+    """Whether a redirected start page stayed on the same site in the broad sense: the same
+    host, a subdomain or parent of it (docs.pydantic.dev -> pydantic.dev), or a sibling
+    under the same parent domain. Never an IP address or a local name, so a page cannot
+    redirect a crawl into a private network."""
+    a, b = site_key(start_url), site_key(final_url)
+    if a == b:
+        return True
+    if not a or not b or _local_host(b):
+        return False
+    if a.endswith("." + b) or b.endswith("." + a):
+        return True
+    pa, pb = a.split(".", 1), b.split(".", 1)
+    return len(pa) == 2 == len(pb) and pa[1] == pb[1] and "." in pa[1]
 
 
 def rebase_scope(final_url: str, prefix: str) -> str:

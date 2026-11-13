@@ -333,3 +333,33 @@ def test_map_follows_a_start_page_that_redirects_to_another_site():
     assert not any("/docs/other/" in u for u in urls)
     whole = [u.url for u in map_site("https://old.ex.com/latest/concepts/", fetcher=fetcher(moved_site()))]
     assert "https://new.ex.com/docs/other/" in whole
+
+
+def test_related_site_allows_moved_docs_but_not_private_or_unrelated_hosts():
+    from pagequorum.urls import related_site
+
+    assert related_site("https://docs.pydantic.dev/x/", "https://pydantic.dev/docs/x/")  # parent domain
+    assert related_site("https://ex.com/", "https://docs.ex.com/")  # subdomain
+    assert related_site("https://old.ex.com/a/", "https://new.ex.com/a/")  # sibling
+    assert related_site("http://ex.com/", "https://www.ex.com/")  # scheme / www only
+    assert not related_site("https://ex.com/", "https://other.org/")
+    assert not related_site("https://ex.com/", "http://127.0.0.1:8000/admin/")
+    assert not related_site("https://ex.com/", "http://192.168.1.1/")
+    assert not related_site("https://ex.com/", "http://[::1]/")
+    assert not related_site("https://ex.com/", "http://router.local/")
+
+
+def test_a_start_page_that_redirects_into_a_private_network_does_not_widen_the_crawl():
+    def handler(request: httpx.Request) -> httpx.Response:
+        host, path = request.url.host, request.url.path
+        if path == "/robots.txt":
+            return httpx.Response(404)
+        if host == "evil.example":
+            return httpx.Response(302, headers={"location": "http://192.168.1.1/admin/"})
+        if host == "192.168.1.1":
+            links = '<a href="/admin/users/">Users</a> <a href="/admin/wifi/">Wi-Fi</a>'
+            return httpx.Response(200, headers={"content-type": HTML}, text=article("Router", links))
+        return httpx.Response(404)
+
+    events = list(pq.crawl("https://evil.example/start/", max_pages=10, fetcher=fetcher(httpx.MockTransport(handler))))
+    assert [ev.url for ev in events] == ["https://evil.example/start/"]  # nothing on the router is followed
