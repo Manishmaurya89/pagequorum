@@ -10,6 +10,9 @@ pagequorum crawl https://www.python-httpx.org/ -o out/ --max-pages 50
 pagequorum serve        # local playground + HTTP API: scrape, crawl, map
 ```
 
+**Online demo:** https://manishmaurya89.github.io/pagequorum/ (recorded examples; run it
+locally to scrape anything else).
+
 ## Why
 
 Getting the main text out of a web page is the step most RAG pipelines get
@@ -241,8 +244,9 @@ python3 -m http.server -d site 8001                        # preview it
 uv run --extra web python scripts/build_site.py --record   # re-record the examples
 ```
 
-Publish the `site/` folder on any static host (GitHub Pages, Cloudflare Pages,
-Netlify, Vercel); its build command is `python3 scripts/build_site.py`. Scraping
+`.github/workflows/pages.yml` publishes it to GitHub Pages on every push to `main`.
+Any other static host works too (build command `python3 scripts/build_site.py`,
+output folder `site`). Scraping
 never runs on the host: the recordings are plain files. Re-record after changing
 the examples in the page; `tests/test_site.py` fails until you do.
 
