@@ -56,6 +56,25 @@ def scope_prefix(start_url: str) -> str:
     return path if path.endswith("/") else path.rsplit("/", 1)[0] + "/"
 
 
+def rebase_scope(final_url: str, prefix: str) -> str:
+    """The scope prefix after the start page redirected to ``final_url``.
+
+    * Same section, new host or scheme (http -> https, example.com -> www...): kept.
+    * A moved section keeps its folder name: /latest/concepts/ that now lands on
+      /docs/validation/latest/concepts/models/ becomes /docs/validation/latest/concepts/.
+    * Otherwise: the folder the start page landed in.
+    """
+    path = urlsplit(final_url).path or "/"
+    if path.startswith(prefix):
+        return prefix
+    name = prefix.rstrip("/").rsplit("/", 1)[-1]
+    if name:
+        i = path.rfind(f"/{name}/")
+        if i >= 0:
+            return path[: i + len(name) + 2]
+    return path.rstrip("/").rsplit("/", 1)[0] + "/"
+
+
 def in_scope(url: str, start_url: str, prefix: str | None = None) -> bool:
     p = urlsplit(url)
     if p.scheme not in ("http", "https"):

@@ -152,6 +152,15 @@ textarea#html { width: 100%; min-height: 130px; margin-top: 12px; padding: 10px 
 .code-tabs .copy { margin-left: auto; color: #d6f36a; text-decoration: none; }
 .code pre { margin: 0; padding: 16px 18px; overflow-x: auto; font-size: 12.5px; line-height: 1.65; }
 
+/* ---- online demo (static hosting, no server) ---- */
+.demo-note { margin-top: 16px; padding: 16px 18px; border: 1px dashed var(--line-strong); border-radius: 12px; background: var(--surface); font-size: 14px; line-height: 1.55; color: var(--muted); }
+.demo-note p { margin: 0 0 10px; }
+.demo-note b { color: var(--ink); }
+.demo-cmd { display: flex; align-items: flex-start; gap: 6px; background: var(--code-bg); border-radius: 9px; }
+.demo-cmd pre { flex: 1; min-width: 0; margin: 0; padding: 11px 14px; overflow-x: auto; color: var(--code-ink); font: 12.5px/1.65 var(--mono); }
+.demo-cmd .btn { margin: 6px; flex: none; color: #d6f36a; border-color: var(--code-line); }
+.is-demo .pill .dot { background: var(--warn); }
+
 /* ---- status ---- */
 #status { margin: 16px 0 0; min-height: 4px; }
 .status-msg { display: flex; gap: 10px; align-items: center; padding: 11px 14px; border-radius: 9px; font-size: 14px; color: var(--muted); }
@@ -389,7 +398,7 @@ footer.site .in .word em, footer.site .word em.in { background-size: 100% 100%; 
       <a href="#playground">Playground</a>
       <a href="#features">How it works</a>
       <a href="#api">API</a>
-      <a href="/redoc" target="_blank" rel="noopener">Reference ↗</a>
+      <a href="/redoc" target="_blank" rel="noopener" id="nav-ref">Reference ↗</a>
     </nav>
     <div class="right"><span class="pill"><span class="dot"></span><span id="version">running locally</span></span></div>
   </div>
@@ -404,8 +413,8 @@ footer.site .in .word em, footer.site .word em.in { background-size: 100% 100%; 
           <h1>Keep what <mark>matters</mark>.<br><em>Drop the rest.</em></h1>
           <p class="lead">pagequorum reads a page with three extractors and keeps only the text they agree on: clean Markdown, chunks that know their section, and links that cite the exact passage.</p>
           <ul class="proof">
-            <li><b>0.969</b>precision on a public benchmark (trafilatura: 0.942)</li>
-            <li><b>44%</b>pages extracted exactly as a human labelled them (29%)</li>
+            <li><b>0.962</b>precision on held-out benchmark pages (trafilatura: 0.947)</li>
+            <li><b>43%</b>held-out pages extracted exactly as a human labelled them (34%)</li>
             <li><b class="langs"><span class="lang-word" lang="en">Any script</span></b>any language or script, kept exactly as written</li>
           </ul>
         </div>
@@ -478,6 +487,13 @@ footer.site .in .word em, footer.site .word em.in { background-size: 100% 100%; 
           </div>
         </form>
       </div>
+
+      <aside class="demo-note" id="demo-note" hidden aria-label="Run it yourself">
+        <p id="demo-intro"><b>Online demo.</b> The example links replay real results recorded on <span id="demo-date"></span>, so this page works without a server.</p>
+        <p><b>Run it yourself</b> to scrape any page, crawl your own site or change the settings (Python 3.10+):</p>
+        <div class="demo-cmd"><pre id="demo-cmd">pip install "pagequorum[web] @ https://github.com/Manishmaurya89/pagequorum/archive/refs/heads/main.zip"
+pagequorum serve --open</pre><button type="button" class="btn ghost small" id="demo-copy">Copy</button></div>
+      </aside>
 
       <div id="status" role="status" aria-live="polite"></div>
     </div>
@@ -593,7 +609,7 @@ footer.site .in .word em, footer.site .word em.in { background-size: 100% 100%; 
   <section class="block-section container" id="api">
     <div class="section-head">
       <div><div class="eyebrow">API</div><h2 class="section">Three modes, <em>one HTTP API</em>.</h2></div>
-      <p class="section-lead">Everything the playground does is a JSON API on this server. Full schemas are in the <a href="/redoc" target="_blank" rel="noopener">API reference</a>, and you can send test requests from the <a href="/docs" target="_blank" rel="noopener">interactive console</a>.</p>
+      <p class="section-lead" id="api-lead">Everything the playground does is a JSON API on this server. Full schemas are in the <a href="/redoc" target="_blank" rel="noopener">API reference</a>, and you can send test requests from the <a href="/docs" target="_blank" rel="noopener">interactive console</a>.</p>
     </div>
     <div class="endpoints" id="endpoints"></div>
   </section>
@@ -601,7 +617,7 @@ footer.site .in .word em, footer.site .word em.in { background-size: 100% 100%; 
   <footer class="site">
     <div class="container">
       <div class="word">page<em>quorum</em></div>
-      <p>Open source (MIT) · <span id="foot-version"></span> · built on trafilatura, readability-lxml, resiliparse and jusText, and measured on the article-extraction-benchmark.</p>
+      <p>Open source (MIT) · <a href="https://github.com/Manishmaurya89/pagequorum" target="_blank" rel="noopener">GitHub</a> · <span id="foot-version"></span> · built on trafilatura, readability-lxml, resiliparse and jusText, and measured on the article-extraction-benchmark.</p>
     </div>
   </footer>
 </main>
@@ -615,7 +631,9 @@ footer.site .in .word em, footer.site .word em.in { background-size: 100% 100%; 
 (function () {
   "use strict";
   const $ = (id) => document.getElementById(id);
-  const ORIGIN = location.origin;
+  let ORIGIN = location.origin;  // where code samples send requests (a local server in the online demo)
+  const LOCAL_ORIGIN = "http://127.0.0.1:8000";
+  const REPO = "https://github.com/Manishmaurya89/pagequorum";
   const VOTER_NAMES = { trafilatura: "trafilatura", readability: "readability", resiliparse: "resiliparse", jsonld: "JSON-LD", justext: "jusText" };
   const VOTER_ABBR = { trafilatura: "Tr", readability: "Rd", resiliparse: "Rs", jsonld: "LD", justext: "Jt" };
   const EXAMPLES = {
@@ -678,7 +696,104 @@ footer.site .in .word em, footer.site .word em.in { background-size: 100% 100%; 
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   }
   function slugOf(u) { return (u || "page").replace(/^https?:\/\//, "").replace(/[^A-Za-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 60) || "page"; }
+  // ---------- server, or the recorded online demo ----------
+  // Run with `pagequorum serve`, every request goes to the API. On a static host there is
+  // no API, so the example links replay responses recorded by scripts/build_site.py.
+  const DEMO_BASE = new URL("demo/", location.href).href;
+  let live = false, demo = null;  // demo: { manifest, files, job }
+  const ready = fetch("/api/health", { headers: { Accept: "application/json" } })
+    .then((r) => (r.ok ? r.json() : null)).catch(() => null)
+    .then(async (h) => {
+      if (h && h.ok) { live = true; $("version").textContent = `v${h.version} · running locally`; $("foot-version").textContent = "version " + h.version; return; }
+      try {
+        const r = await fetch(DEMO_BASE + "manifest.json");
+        if (r.ok) demo = { manifest: await r.json(), files: {}, job: null };
+      } catch (e) { /* no recordings either */ }
+      enterDemo();
+    });
+
+  function enterDemo() {
+    document.body.classList.add("is-demo");
+    ORIGIN = LOCAL_ORIGIN;  // code samples target the server the visitor runs
+    $("demo-note").hidden = false;
+    $("toggle-html").hidden = true;
+    $("nav-ref").href = REPO + "#web-app-and-http-api";
+    const lead = $("api-lead"); lead.textContent = "";
+    lead.append("Everything the playground does is a JSON API, served on your computer by ", el("span", { class: "mono", text: "pagequorum serve" }),
+      ". Request and response formats are in the ", el("a", { href: REPO + "#web-app-and-http-api", target: "_blank", rel: "noopener", text: "README" }),
+      "; once it runs, the interactive reference is at ", el("span", { class: "mono", text: LOCAL_ORIGIN + "/docs" }), ".");
+    if (demo) {
+      $("version").textContent = "online demo · recorded results";
+      $("demo-date").textContent = demo.manifest.recorded_at;
+      $("foot-version").textContent = `version ${demo.manifest.version} · demo recorded ${demo.manifest.recorded_at}`;
+    } else {
+      $("version").textContent = "no server";
+      $("demo-intro").textContent = "No pagequorum server is answering here.";
+    }
+    renderEndpoints();
+    refreshCode();
+  }
+
+  function canonUrl(u) {
+    try { const x = new URL(u); x.hash = ""; const s = x.href; return x.pathname !== "/" && s.endsWith("/") ? s.slice(0, -1) : s; } catch (e) { return u || ""; }
+  }
+  function sameRequest(a, b) {
+    const keys = (o) => Object.keys(o).filter((k) => o[k] != null).sort().join();
+    if (keys(a) !== keys(b)) return false;
+    return Object.keys(a).every((k) => a[k] == null || (k === "url" ? canonUrl(a[k]) === canonUrl(b[k]) : JSON.stringify(a[k]) === JSON.stringify(b[k])));
+  }
+  async function demoFile(name) {
+    if (!(name in demo.files)) {
+      const r = await fetch(DEMO_BASE + name);
+      if (!r.ok) throw new Error(`A recorded demo file is missing (${name}).`);
+      demo.files[name] = await r.json();
+    }
+    return demo.files[name];
+  }
+  function demoMiss(kind, body) {
+    const verb = { scrape: "scrape", crawl: "crawl", map: "map" }[kind];
+    const what = body.html ? "extract pasted HTML" : `${verb} ${body.url ? decoded(body.url) : "another page"}`;
+    return `The online demo only replays recorded results for the example links, with the default settings. To ${what}, run pagequorum on your computer (see “Run it yourself” above).`;
+  }
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  async function demoApi(method, path, body) {
+    const kind = { "/api/scrape": "scrape", "/api/map": "map", "/api/crawl": "crawl" }[path];
+    if (method === "POST" && kind) {
+      const entry = demo.manifest[kind].find((e) => sameRequest(e.request, body));
+      if (!entry) throw new Error(demoMiss(kind, body));
+      const data = await demoFile(entry.file);
+      await sleep(kind === "crawl" ? 250 : 600);  // short, so it still feels like a request
+      if (kind !== "crawl") return data;
+      demo.job = { rec: data, shown: 0, stopped: false, t0: performance.now() };
+      return { id: "demo", status: "running", downloads: { chunks: DEMO_BASE + entry.chunks, documents: DEMO_BASE + entry.documents } };
+    }
+    let m;
+    if (method === "GET" && (m = path.match(/^\/api\/crawl\/demo\?since=(\d+)$/))) return demoCrawlStatus(Number(m[1]));
+    if (method === "GET" && (m = path.match(/^\/api\/crawl\/demo\/pages\/(\d+)$/))) {
+      const doc = demo.job && demo.job.rec.pages[m[1]];
+      if (!doc) throw new Error("No extracted page with that number.");
+      return doc;
+    }
+    if (method === "DELETE" && path === "/api/crawl/demo") { if (demo.job) demo.job.stopped = true; return { status: "stopping" }; }
+    throw new Error("Not available in the online demo.");
+  }
+  // Replays a recorded crawl one page per poll, the way a polite crawl fills in.
+  function demoCrawlStatus(since) {
+    const job = demo.job, s = job.rec.status, all = s.pages;
+    if (!job.stopped) job.shown = Math.min(all.length, job.shown + 1);
+    if (job.shown >= all.length) return { ...s, pages: all.slice(since) };
+    const shown = all.slice(0, job.shown), ok = shown.filter((p) => p.status === "ok");
+    return {
+      ...s, status: job.stopped ? "stopped" : "running", pages_done: ok.length, pages_skipped: shown.length - ok.length,
+      chunks: ok.reduce((n, p) => n + (p.chunks || 0), 0), words: shown.reduce((n, p) => n + (p.words || 0), 0),
+      elapsed_s: (performance.now() - job.t0) / 1000, pages: shown.slice(since),
+    };
+  }
+
   async function api(method, path, body) {
+    await ready;
+    if (demo) return demoApi(method, path, body);
+    if (!live) throw new Error("No pagequorum server is answering here. Run it on your computer (see “Run it yourself” above).");
     const r = await fetch(path, { method, headers: body ? { "Content-Type": "application/json" } : {}, body: body ? JSON.stringify(body) : undefined });
     const j = await r.json().catch(() => ({}));
     if (!r.ok) {
@@ -867,7 +982,7 @@ footer.site .in .word em, footer.site .word em.in { background-size: 100% 100%; 
     if (!$("html-box").hidden && $("html").value.trim()) body.html = $("html").value;  // the real HTML, not the snippet's placeholder
     else delete body.html;
     if (!body.url && !body.html) throw new Error("Enter a URL first.");
-    setStatus(body.html ? "Extracting…" : "Fetching the page and letting the extractors vote…", "loading");
+    setStatus(demo ? "Loading the recorded result…" : body.html ? "Extracting…" : "Fetching the page and letting the extractors vote…", "loading");
     state.scrape = await api("POST", "/api/scrape", body);
     showScrape();
     setStatus("");
@@ -931,11 +1046,12 @@ footer.site .in .word em, footer.site .word em.in { background-size: 100% 100%; 
     const r = await api("POST", "/api/crawl", req.body);
     state.job = { id: r.id, pages: [], running: true };
     $("c-rows").textContent = ""; $("c-empty").hidden = false; $("c-empty").textContent = "Waiting for the first page…";
-    $("c-dl-chunks").href = `/api/crawl/${r.id}/chunks.jsonl`;
-    $("c-dl-docs").href = `/api/crawl/${r.id}/documents.jsonl`;
+    $("c-dl-chunks").href = (r.downloads && r.downloads.chunks) || `/api/crawl/${r.id}/chunks.jsonl`;
+    $("c-dl-docs").href = (r.downloads && r.downloads.documents) || `/api/crawl/${r.id}/documents.jsonl`;
     $("crawl-result").hidden = false;
     reveal("crawl-result");
-    setStatus("Crawling politely: one request per second per site. Pages appear below as they are extracted.", "loading");
+    setStatus(demo ? "Replaying a recorded crawl: pages appear below one by one."
+      : "Crawling politely: one request per second per site. Pages appear below as they are extracted.", "loading");
     $("run").disabled = true;
     pollCrawl();
   }
@@ -972,7 +1088,7 @@ footer.site .in .word em, footer.site .word em.in { background-size: 100% 100%; 
   }
   async function runMap(req) {
     if (!req.body.url) throw new Error("Enter the site's URL first.");
-    setStatus("Reading the sitemap and the page's links…", "loading");
+    setStatus(demo ? "Loading the recorded result…" : "Reading the sitemap and the page's links…", "loading");
     state.map = await api("POST", "/api/map", req.body);
     $("m-filter").value = "";
     showMap();
@@ -988,6 +1104,7 @@ footer.site .in .word em, footer.site .word em.in { background-size: 100% 100%; 
       ["POST", "/api/map", "Map a site", "Every page URL from the sitemap and the start page's links, in seconds, without extracting them. Pick what to scrape or crawl next.", `curl -X POST ${ORIGIN}/api/map \\\n  -H 'Content-Type: application/json' \\\n  -d '{"url": "https://www.python-httpx.org/"}'\n\n# → { "count": 23, "urls": [ { "url", "source": "sitemap" }, ... ] }`],
     ];
     const box = $("endpoints");
+    box.textContent = "";
     for (const [m, p, title, desc, code] of eps) {
       box.append(el("div", { class: "card endpoint" },
         el("div", { class: "info" }, el("div", {}, el("span", { class: "method", text: m }), el("span", { class: "path", text: p })), el("h3", { text: title }), el("p", { text: desc })),
@@ -1190,7 +1307,10 @@ footer.site .in .word em, footer.site .word em.in { background-size: 100% 100%; 
   setMode("scrape");
   $("url").value = recall("pq.url.scrape") || "";
   refreshCode();
-  fetch("/api/health").then((r) => r.json()).then((h) => { $("version").textContent = `v${h.version} · running locally`; $("foot-version").textContent = "version " + h.version; }).catch(() => {});
+  $("demo-copy").addEventListener("click", async () => {
+    try { await navigator.clipboard.writeText($("demo-cmd").textContent); $("demo-copy").textContent = "Copied ✓"; } catch (e) { $("demo-copy").textContent = "Copy failed"; }
+    setTimeout(() => { $("demo-copy").textContent = "Copy"; }, 1500);
+  });
 })();
 </script>
 </body>

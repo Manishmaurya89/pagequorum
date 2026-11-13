@@ -27,7 +27,7 @@ from .extract import ExtractOptions, extract
 from .fetch import Fetcher, read_capped
 from .metadata import base_url
 from .models import Document
-from .urls import in_scope, looks_like_page, normalize_url, scope_prefix
+from .urls import in_scope, looks_like_page, normalize_url, rebase_scope, scope_prefix
 
 _XML_PARSER = etree.XMLParser(resolve_entities=False, no_network=True, recover=True, huge_tree=False)
 _MAX_SITEMAP_BYTES = 20_000_000
@@ -116,15 +116,19 @@ def crawl(
     content_links_only: bool = False,
 ) -> Iterator[CrawlEvent]:
     """Crawl breadth-first from ``start_url``. ``content_links_only`` follows only links
-    found in the extracted main content, never menu/sidebar/footer links."""
+    found in the extracted main content, never menu/sidebar/footer links.
+
+    The crawl stays on the start URL's site, under its folder. If the start page
+    redirects (to another host, or a section that moved), that boundary follows it.
+    """
     own = fetcher is None
     f = fetcher or Fetcher()
-    prefix = scope_prefix(start_url)
+    scope_url, prefix = start_url, scope_prefix(start_url)
     inc = re.compile(include) if include else None
     exc = re.compile(exclude) if exclude else None
 
     def wanted(url: str) -> bool:
-        return (in_scope(url, start_url, prefix) and looks_like_page(url)
+        return (in_scope(url, scope_url, prefix) and looks_like_page(url)
                 and (not inc or inc.search(url)) and not (exc and exc.search(url)))
 
     queue: deque[tuple[str, int]] = deque([(start_url, 0)])
@@ -133,16 +137,19 @@ def crawl(
     hashes: dict[str, str] = {}
     pages = attempts = 0
     try:
-        if use_sitemap:
-            for loc in _sitemap_urls(f, start_url, limit=max_pages * 5):
-                n = normalize_url(loc)
-                if n not in seen and wanted(loc):
-                    seen.add(n)
-                    queue.append((loc, 1))
         while queue and pages < max_pages and attempts < max_pages * 3:
             url, depth = queue.popleft()
             attempts += 1
             res = f.fetch(url)
+            if attempts == 1:  # the start page: follow it if it moved, then queue the sitemap
+                if res.ok and res.final_url and normalize_url(res.final_url) != normalize_url(start_url):
+                    scope_url, prefix = res.final_url, rebase_scope(res.final_url, prefix)
+                if use_sitemap:
+                    for loc in _sitemap_urls(f, scope_url, limit=max_pages * 5):
+                        n = normalize_url(loc)
+                        if n not in seen and wanted(loc):
+                            seen.add(n)
+                            queue.append((loc, 1))
             if not res.ok:
                 yield CrawlEvent(url, depth, skipped=res.skipped, error=res.error)
                 continue
@@ -197,28 +204,33 @@ def map_site(start_url: str, fetcher: Fetcher | None = None, limit: int = 500, u
     """
     own = fetcher is None
     f = fetcher or Fetcher()
-    prefix = "/" if whole_site else scope_prefix(start_url)
+    scope_url, prefix = start_url, ("/" if whole_site else scope_prefix(start_url))
     seen: set[str] = set()
     out: list[MappedUrl] = []
 
     def add(url: str, source: str) -> None:
         url = url.split("#", 1)[0]
         n = normalize_url(url)
-        if n in seen or not in_scope(url, start_url, prefix) or not looks_like_page(url):
+        if n in seen or not in_scope(url, scope_url, prefix) or not looks_like_page(url):
             return
         seen.add(n)
         out.append(MappedUrl(url, source))
 
     try:
-        add(start_url, "page")
+        res = f.fetch(start_url)
+        final = (res.final_url or start_url) if res.ok else start_url
+        if normalize_url(final) != normalize_url(start_url):  # it redirected: map where it landed
+            scope_url = final
+            if not whole_site:
+                prefix = rebase_scope(final, prefix)
+        add(final, "page")
         if use_sitemap:
-            for loc in _sitemap_urls(f, start_url, limit=limit * 2):
+            for loc in _sitemap_urls(f, scope_url, limit=limit * 2):
                 add(loc, "sitemap")
                 if len(out) >= limit:
                     return out[:limit]
-        res = f.fetch(start_url)
         if res.ok:
-            for link in page_links(res.html, res.final_url or start_url):
+            for link in page_links(res.html, final):
                 add(link, "page")
                 if len(out) >= limit:
                     break

@@ -96,9 +96,11 @@ What this does and does not show:
 
 - On held-out pages pagequorum **ties** trafilatura on F1. The "all pages"
   lead includes the dev pages it was tuned on, so don't read it as a win.
-- The real gain is **precision**: 0.969 vs 0.942, i.e. less boilerplate in your
-  index. The text is also exactly the human-labelled article body on **44%** of
-  pages vs 29%. The price is slightly lower recall (0.970 vs 0.978).
+- The real gain is **precision**: on held-out pages 0.962 vs 0.947, i.e. less
+  boilerplate in your index. The text is also exactly the human-labelled article
+  body on **43%** of held-out pages vs 34%. The price is slightly lower recall
+  (0.964 vs 0.978). Counting the dev pages too inflates the gap (0.969 vs 0.942,
+  44% vs 29%), because pagequorum was tuned on them.
 - The consensus score separates failures: mean 0.75 on pages with F1 < 0.8,
   0.89 on the rest.
 - The benchmark contains news and blogs only. Documentation pages, a major RAG
@@ -149,8 +151,17 @@ tried, including what did not work.
 
 ## Install
 
+The quickest way, with the web app (no clone needed):
+
 ```bash
-git clone <this repo> && cd pagequorum
+pip install "pagequorum[web] @ https://github.com/Manishmaurya89/pagequorum/archive/refs/heads/main.zip"
+pagequorum serve --open
+```
+
+For development:
+
+```bash
+git clone https://github.com/Manishmaurya89/pagequorum && cd pagequorum
 uv sync                      # or: pip install -e .
 # optional, the local web app:
 pip install -e '.[web]'      # or run it with: uv run --extra web pagequorum serve
@@ -215,6 +226,25 @@ expose it on a public network. It also answers only requests addressed to
 `localhost`, `127.0.0.1` or `[::1]`, so a website you visit can't reach it through
 DNS rebinding. Links taken from pages keep only `http`, `https` and `mailto` URLs.
 Crawl jobs live in memory until the server stops.
+
+#### Online demo (static hosting)
+
+The same page also works with no server, as a free static site. When `/api/health`
+does not answer, it switches to a recorded demo: the example links replay real API
+responses saved in `site/demo/`, a crawl replays page by page, and anything else
+(another URL, other settings, pasted HTML) explains how to run pagequorum locally.
+Code samples then point at `http://127.0.0.1:8000`.
+
+```bash
+python3 scripts/build_site.py                              # assemble site/ (no network)
+python3 -m http.server -d site 8001                        # preview it
+uv run --extra web python scripts/build_site.py --record   # re-record the examples
+```
+
+Publish the `site/` folder on any static host (GitHub Pages, Cloudflare Pages,
+Netlify, Vercel); its build command is `python3 scripts/build_site.py`. Scraping
+never runs on the host: the recordings are plain files. Re-record after changing
+the examples in the page; `tests/test_site.py` fails until you do.
 
 ### Python
 

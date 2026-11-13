@@ -282,3 +282,54 @@ def test_unsupported_or_corrupt_encoding_is_an_error_not_a_crash():
     assert seen == ["gzip, deflate"]  # brotli is never asked for
     bad = f.fetch("https://ex.com/bad")
     assert not bad.ok and "could not decode" in bad.error
+
+
+def test_rebase_scope_follows_a_moved_start_page():
+    from pagequorum.urls import rebase_scope
+
+    assert rebase_scope("https://www.ex.com/docs/intro/", "/docs/") == "/docs/"  # new host/scheme only
+    assert rebase_scope("https://new.ex.com/docs/v/latest/concepts/models/", "/latest/concepts/") == \
+        "/docs/v/latest/concepts/"  # the section moved and kept its name
+    assert rebase_scope("https://ex.com/guide/start.html", "/manual/") == "/guide/"  # landed elsewhere
+    assert rebase_scope("https://ex.com/", "/old/") == "/"
+
+
+def moved_site():
+    """old.ex.com/latest/concepts/ now redirects to a section on new.ex.com (like docs that moved)."""
+    base = "/docs/v/latest/concepts/"
+    links = (f'<a href="{base}types/">Types</a> <a href="{base}fields/">Fields</a> '
+             '<a href="/docs/other/">Other section</a>')
+    pages = {f"{base}models/": article("Models", links), f"{base}types/": article("Types"),
+             f"{base}fields/": article("Fields"), "/docs/other/": article("Other")}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        host, path = request.url.host, request.url.path
+        if path == "/robots.txt":
+            return httpx.Response(404)
+        if host == "old.ex.com" and path == "/latest/concepts/":
+            return httpx.Response(301, headers={"location": f"https://new.ex.com{base}models/"})
+        if host == "new.ex.com" and path in pages:
+            return httpx.Response(200, headers={"content-type": HTML}, text=pages[path])
+        return httpx.Response(404)
+
+    return httpx.MockTransport(handler)
+
+
+def test_crawl_follows_a_start_page_that_redirects_to_another_site():
+    events = list(pq.crawl("https://old.ex.com/latest/concepts/", max_pages=10, fetcher=fetcher(moved_site())))
+    done = sorted(ev.document.url for ev in events if ev.document)
+    assert done == ["https://new.ex.com/docs/v/latest/concepts/fields/",
+                    "https://new.ex.com/docs/v/latest/concepts/models/",
+                    "https://new.ex.com/docs/v/latest/concepts/types/"]  # not /docs/other/
+
+
+def test_map_follows_a_start_page_that_redirects_to_another_site():
+    from pagequorum.crawl import map_site
+
+    urls = [u.url for u in map_site("https://old.ex.com/latest/concepts/", fetcher=fetcher(moved_site()),
+                                    whole_site=False)]
+    assert urls[0] == "https://new.ex.com/docs/v/latest/concepts/models/"
+    assert "https://new.ex.com/docs/v/latest/concepts/types/" in urls
+    assert not any("/docs/other/" in u for u in urls)
+    whole = [u.url for u in map_site("https://old.ex.com/latest/concepts/", fetcher=fetcher(moved_site()))]
+    assert "https://new.ex.com/docs/other/" in whole

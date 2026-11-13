@@ -11,3 +11,5 @@ bench/data/
 # local fetch cache
 .pagequorum-cache/
 out/
+# the static demo site: index.html is copied in by scripts/build_site.py
+site/index.html
