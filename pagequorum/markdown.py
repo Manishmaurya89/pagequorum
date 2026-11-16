@@ -15,7 +15,7 @@ from urllib.parse import urljoin, urlsplit
 
 from lxml import html as lxml_html
 
-from .dom import HEADINGS, Block, is_block_element, pre_text
+from .dom import HEADINGS, INTERNAL_CHARS, Block, is_block_element, pre_text
 from .text import normalize_ws
 
 _WS = re.compile(r"[ \t\r\f\v\n]+")
@@ -51,10 +51,12 @@ def escape_emphasis(s: str) -> str:
     return _EMPHASIS_RUN.sub(fix, s) if ("*" in s or "_" in s) else s
 
 
-# Emphasis placeholders (Unicode private use), turned into ``**``/``*`` by resolve_emphasis.
-_OPEN = {"**": "\ue000", "*": "\ue002"}
-_CLOSE = {"**": "\ue001", "*": "\ue003"}
-_MARKER = {"\ue000": "**", "\ue001": "**", "\ue002": "*", "\ue003": "*"}
+# Emphasis placeholders, turned into ``**``/``*`` by resolve_emphasis. They are Unicode
+# noncharacters that dom.parse_html removes from every page, so page text cannot fake them.
+_B_OPEN, _B_CLOSE, _I_OPEN, _I_CLOSE = INTERNAL_CHARS
+_OPEN = {"**": _B_OPEN, "*": _I_OPEN}
+_CLOSE = {"**": _B_CLOSE, "*": _I_CLOSE}
+_MARKER = {_B_OPEN: "**", _B_CLOSE: "**", _I_OPEN: "*", _I_CLOSE: "*"}
 
 
 def _left_flanking(before: str, after: str) -> bool:
@@ -81,22 +83,28 @@ def resolve_emphasis(text: str) -> str:
             lines.append(line)
             continue
         # touching spans of one kind are one span: <em>Live Science</em><em>.</em>
-        line = line.replace("\ue003\ue002", "").replace("\ue001\ue000", "")
-
-        def outside(i: int, step: int, line: str = line) -> str:  # nearest real char; a line edge is whitespace
-            i += step
-            while 0 <= i < len(line) and line[i] in _MARKER:
-                i += step
-            return line[i] if 0 <= i < len(line) else " "
+        line = line.replace(_I_CLOSE + _I_OPEN, "").replace(_B_CLOSE + _B_OPEN, "")
+        # the nearest real character before and after each position (a line edge is
+        # whitespace), in one pass each way so nested markers stay linear
+        before, after = [" "] * len(line), [" "] * len(line)
+        last = " "
+        for i, c in enumerate(line):
+            before[i] = last
+            if c not in _MARKER:
+                last = c
+        last = " "
+        for i in range(len(line) - 1, -1, -1):
+            after[i] = last
+            if line[i] not in _MARKER:
+                last = line[i]
 
         keep, stack = set(), []
         for i, c in enumerate(line):
-            if c in ("\ue000", "\ue002"):
+            if c in (_B_OPEN, _I_OPEN):
                 stack.append(i)
-            elif c in ("\ue001", "\ue003") and stack:
+            elif c in (_B_CLOSE, _I_CLOSE) and stack:
                 j = stack.pop()
-                if (_left_flanking(outside(j, -1), outside(j, 1))
-                        and _right_flanking(outside(i, -1), outside(i, 1))):
+                if _left_flanking(before[j], after[j]) and _right_flanking(before[i], after[i]):
                     keep.update((i, j))
         lines.append("".join(_MARKER[c] if i in keep else "" if c in _MARKER else c
                              for i, c in enumerate(line)))

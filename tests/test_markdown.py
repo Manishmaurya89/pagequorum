@@ -187,5 +187,24 @@ def test_emphasis_is_written_only_where_a_markdown_reader_sees_it():
 def test_emphasis_placeholders_never_reach_the_output():
     out = md("<p><b><i>both</i></b>, <i>a</i><b>b</b> and <em> </em>x</p><table><tr><th><b>H</b></th></tr>"
              "<tr><td><i>c</i></td></tr><tr><td>d</td></tr><tr><td>e</td></tr><tr><td>f</td></tr></table>")
-    assert not any("" <= ch <= "" for ch in out)
+    assert not any(ch in dom.INTERNAL_CHARS for ch in out)
     assert "***both***" in out and "*a***b**" in out
+
+
+def test_page_text_cannot_fake_emphasis_placeholders():
+    # icon-font glyphs live in the private-use area and are kept as they are
+    assert md("<p>Menu  icon and  two</p>") == "Menu  icon and  two"
+    # the renderer's own placeholders (noncharacters) are removed from page text, also
+    # when written as character references, so a page cannot inject or unbalance them
+    out = md("<p>a﷐b &#xFDD2;c&#64977; <b>bold</b> <code>x﷑</code></p>")
+    assert out == "ab c **bold** `x`"
+
+
+def test_deeply_nested_emphasis_renders_in_linear_time():
+    import time
+
+    html = "<p>" + "<b><i>" * 120 + "x" + "</i></b>" * 120 + "</p>" + "<p>" + "<i>a</i><b>,</b>" * 4000 + "</p>"
+    start = time.perf_counter()
+    out = md(html)
+    assert time.perf_counter() - start < 2.0
+    assert not any(ch in dom.INTERNAL_CHARS for ch in out)

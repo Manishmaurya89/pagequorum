@@ -109,15 +109,37 @@ class Block:
         return int(self.tag[1]) if self.tag in HEADINGS else 0
 
 
+# Unicode noncharacters the Markdown renderer uses internally as emphasis placeholders.
+# They are reserved for internal use and carry no text, so they are removed from pages.
+INTERNAL_CHARS = "\ufdd0\ufdd1\ufdd2\ufdd3"
+_INTERNAL = re.compile(f"[{INTERNAL_CHARS}]")
+_INTERNAL_REF = re.compile(r"&#(x0*fdd[0-3]|0*6497[6-9])", re.I)  # the same as character references
+
+
+def _drop_internal_chars(tree: lxml_html.HtmlElement) -> None:
+    for el in tree.iter():
+        if el.text and _INTERNAL.search(el.text):
+            el.text = _INTERNAL.sub("", el.text)
+        if el.tail and _INTERNAL.search(el.tail):
+            el.tail = _INTERNAL.sub("", el.tail)
+        if isinstance(el.tag, str):
+            for name, value in el.attrib.items():
+                if _INTERNAL.search(value):
+                    el.set(name, _INTERNAL.sub("", value))
+
+
 def parse_html(text: str) -> lxml_html.HtmlElement:
     """Parse a whole HTML document into an lxml tree (never raises on junk input)."""
     text = _XML_DECL.sub("", text.replace("\x00", ""), count=1)
     if not text.strip():
         text = "<html><body></body></html>"
     try:
-        return lxml_html.document_fromstring(text)
+        tree = lxml_html.document_fromstring(text)
     except (ParserError, ValueError):
         return lxml_html.document_fromstring("<html><body></body></html>")
+    if _INTERNAL.search(text) or _INTERNAL_REF.search(text):
+        _drop_internal_chars(tree)
+    return tree
 
 
 def body_of(tree: lxml_html.HtmlElement) -> lxml_html.HtmlElement:
