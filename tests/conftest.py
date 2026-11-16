@@ -21,3 +21,17 @@ def no_sleep(monkeypatch):
     import pagequorum.fetch as fetch
 
     monkeypatch.setattr(fetch.time, "sleep", lambda s: None)
+
+
+@pytest.fixture(autouse=True)
+def no_dns(monkeypatch):
+    """Tests never touch the network: private-address checks see made-up hosts as public,
+    and only `localhost` resolves (to loopback), as it does everywhere."""
+    import socket
+
+    def fake_getaddrinfo(host, *args, **kwargs):
+        if host == "localhost":
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 0))]
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.215.14", 0))]
+
+    monkeypatch.setattr("pagequorum.fetch.socket.getaddrinfo", fake_getaddrinfo)

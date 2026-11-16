@@ -8,6 +8,7 @@ block of a page; only what they agree on is kept. The result keeps its structure
 pagequorum scrape https://docs.python.org/3/library/json.html
 pagequorum crawl https://www.python-httpx.org/ -o out/ --max-pages 50
 pagequorum serve        # local playground + HTTP API: scrape, crawl, map
+pagequorum mcp          # let AI assistants (Claude, Cursor, VS Code) read pages with it
 ```
 
 **Online demo:** https://manishmaurya89.github.io/pagequorum/ (recorded examples; run it
@@ -249,6 +250,52 @@ Any other static host works too (build command `python3 scripts/build_site.py`,
 output folder `site`). Scraping
 never runs on the host: the recordings are plain files. Re-record after changing
 the examples in the page; `tests/test_site.py` fails until you do.
+
+### AI assistants (MCP)
+
+`pagequorum mcp` is an [MCP](https://modelcontextprotocol.io) server, so assistants
+that support MCP (Claude Code, Claude Desktop, Cursor, VS Code and others) can read
+web pages with it. It offers four read-only tools:
+
+| tool | what the assistant gets |
+|---|---|
+| `scrape` | one page as clean Markdown, headed by the extractors' agreement |
+| `crawl` | a site section (up to 50 pages), each page as Markdown |
+| `map_site` | the site's page URLs, from its sitemap and links |
+| `extract_html` | clean Markdown from HTML the assistant already has (no network) |
+
+Setup needs [uv](https://docs.astral.sh/uv/) (`uvx` fetches and runs pagequorum on
+demand). For Claude Code:
+
+```bash
+claude mcp add pagequorum -- uvx --from "pagequorum[mcp] @ https://github.com/Manishmaurya89/pagequorum/archive/refs/heads/main.zip" pagequorum mcp
+```
+
+For Claude Desktop (`claude_desktop_config.json`), Cursor (`~/.cursor/mcp.json`) and
+most other clients:
+
+```json
+{
+  "mcpServers": {
+    "pagequorum": {
+      "command": "uvx",
+      "args": ["--from", "pagequorum[mcp] @ https://github.com/Manishmaurya89/pagequorum/archive/refs/heads/main.zip",
+               "pagequorum", "mcp"]
+    }
+  }
+}
+```
+
+VS Code (`.vscode/mcp.json`) uses `"servers"` instead of `"mcpServers"`, with
+`"type": "stdio"` added. Without uv: `pip install "pagequorum[mcp] @ <the same URL>"`
+and use `"command": "pagequorum", "args": ["mcp"]`.
+
+**Safety.** The URLs come from a model, which may have just read a page telling it to
+fetch something it should not. So the tools refuse private-network addresses
+(localhost, 10.x, 192.168.x, cloud metadata at 169.254.169.254, ...), including
+redirects into them and host names that resolve to them. To read your own development
+server, set `PAGEQUORUM_ALLOW_PRIVATE=1` in the server's `env`. robots.txt and the
+per-site delay apply as usual.
 
 ### Python
 

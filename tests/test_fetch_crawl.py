@@ -363,3 +363,22 @@ def test_a_start_page_that_redirects_into_a_private_network_does_not_widen_the_c
 
     events = list(pq.crawl("https://evil.example/start/", max_pages=10, fetcher=fetcher(httpx.MockTransport(handler))))
     assert [ev.url for ev in events] == ["https://evil.example/start/"]  # nothing on the router is followed
+
+
+def test_allow_private_false_refuses_private_addresses_and_redirects_into_them():
+    from pagequorum.fetch import private_address
+
+    for url in ("http://127.0.0.1/", "http://localhost:8000/", "http://169.254.169.254/", "http://10.0.0.1/",
+                "http://192.168.1.1/", "http://[::1]/", "http://[::ffff:127.0.0.1]/", "http://100.64.0.1/"):
+        assert private_address(url), url
+    assert private_address("https://ex.com/") is None
+
+    def handler(request):
+        if request.url.host == "ex.com":
+            return httpx.Response(302, headers={"location": "http://192.168.1.1/admin"})
+        return httpx.Response(200, headers={"content-type": HTML}, text=article("Router"))
+
+    f = fetcher(httpx.MockTransport(handler), allow_private=False, respect_robots=False)
+    assert f.fetch("https://ex.com/").skipped.startswith("refused: 192.168.1.1")
+    assert f.fetch("http://192.168.1.1/admin").skipped.startswith("refused:")
+    assert fetcher(httpx.MockTransport(handler), respect_robots=False).fetch("http://192.168.1.1/admin").ok  # default: allowed

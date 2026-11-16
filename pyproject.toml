@@ -37,6 +37,8 @@ web = [
     "fastapi>=0.110",
     "uvicorn>=0.29",
 ]
+# Use pagequorum from AI assistants: `pagequorum mcp`
+mcp = ["mcp>=2.3,<3"]
 
 [project.scripts]
 pagequorum = "pagequorum.cli:main"
@@ -44,6 +46,7 @@ pagequorum = "pagequorum.cli:main"
 [dependency-groups]
 dev = [
     "fastapi>=0.110",
+    "mcp>=2.3,<3",
     "pytest>=8",
 ]
 

@@ -130,6 +130,17 @@ def cmd_serve(args) -> int:
     return 0
 
 
+def cmd_mcp(args) -> int:
+    try:
+        from .mcp_server import main as run_mcp
+    except ImportError:
+        print("The MCP server needs the 'mcp' extra:  pip install 'pagequorum[mcp]'\n"
+              "or run it with:  uv run --extra mcp pagequorum mcp", file=sys.stderr)
+        return 2
+    run_mcp()  # stdout carries the MCP protocol from here on: nothing else may print to it
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="pagequorum", description="Accurate web-page extraction for RAG.")
     ap.add_argument("--version", action="version", version=f"pagequorum {__version__}")
@@ -180,6 +191,9 @@ def main(argv: list[str] | None = None) -> int:
     w.add_argument("--port", type=int, default=8000)
     w.add_argument("--open", action="store_true", help="open the app in your browser")
     w.set_defaults(func=cmd_serve)
+
+    m = sub.add_parser("mcp", help="run as an MCP server for AI assistants (needs the 'mcp' extra)")
+    m.set_defaults(func=cmd_mcp)
 
     args = ap.parse_args(argv)
     return args.func(args)

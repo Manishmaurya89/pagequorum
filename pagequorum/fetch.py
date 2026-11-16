@@ -19,8 +19,10 @@ from __future__ import annotations
 
 import email.utils
 import hashlib
+import ipaddress
 import json
 import random
+import socket
 import threading
 import time
 import zlib
@@ -44,6 +46,33 @@ ROBOTS_MAX_BYTES = 500 * 1024  # RFC 9309 2.5: parse at least 500 KiB; anything 
 # installed) and inflate every network chunk in one unbounded step.
 ACCEPT_ENCODING = "gzip, deflate"
 _GZIP_WBITS = 16 + zlib.MAX_WBITS
+
+
+class BlockedAddress(httpx.RequestError):
+    """A request to a private-network address, refused because ``allow_private=False``."""
+
+
+def private_address(url: str) -> str | None:
+    """Why ``url`` points into a private network (loopback, 10/8, 192.168/16, link-local
+    such as cloud metadata at 169.254.169.254, ...), or None. Host names are resolved;
+    one that does not resolve is let through, since its request fails anyway."""
+    host = urlsplit(url).hostname
+    if not host:
+        return None
+    try:
+        addresses = {ipaddress.ip_address(host)}
+    except ValueError:
+        try:
+            addresses = {ipaddress.ip_address(info[4][0].split("%", 1)[0])
+                         for info in socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)}
+        except (OSError, UnicodeError, ValueError):
+            return None
+    for address in addresses:
+        if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
+            address = address.ipv4_mapped
+        if not address.is_global or address.is_multicast:
+            return f"{host} is a private-network address ({address})"
+    return None
 
 
 def _deflate_wbits(head: bytes) -> int:
@@ -201,6 +230,11 @@ def _retry_after(value: str | None) -> float | None:
             return None
 
 
+def _refuse_private(request: httpx.Request) -> None:
+    if why := private_address(str(request.url)):
+        raise BlockedAddress(why, request=request)
+
+
 class Fetcher:
     def __init__(
         self,
@@ -212,7 +246,10 @@ class Fetcher:
         max_bytes: int = 15_000_000,
         cache_dir: str | Path | None = None,
         transport: httpx.BaseTransport | None = None,
+        allow_private: bool = True,
     ):
+        """``allow_private=False`` refuses private-network addresses, including redirects
+        into one: use it whenever the URLs come from someone else (a model, a web form)."""
         self.user_agent = user_agent
         self.respect_robots = respect_robots
         self.delay = delay
@@ -220,6 +257,7 @@ class Fetcher:
         self.retries = retries
         self.max_bytes = max_bytes
         self.cache_dir = Path(cache_dir) if cache_dir else None
+        self.allow_private = allow_private
         self.client = httpx.Client(
             headers={
                 "User-Agent": user_agent,
@@ -231,6 +269,7 @@ class Fetcher:
             max_redirects=10,
             timeout=timeout,
             transport=transport,
+            event_hooks={} if allow_private else {"request": [_refuse_private]},  # runs for every redirect too
         )
         self.robots = RobotsCache(self.client, user_agent)
         self._last: dict[str, float] = {}
@@ -290,6 +329,8 @@ class Fetcher:
     def fetch(self, url: str) -> FetchResult:
         if urlsplit(url).scheme not in ("http", "https"):
             return FetchResult(url=url, skipped="only http(s) URLs can be fetched")
+        if not self.allow_private and (why := private_address(url)):
+            return FetchResult(url=url, skipped=f"refused: {why}")
         cached = self._cache_get(url)
         if cached:
             return cached
@@ -301,6 +342,8 @@ class Fetcher:
             self._wait_turn(url)
             try:
                 result, body = self._get(url)
+            except BlockedAddress as exc:  # a redirect into a private network: never retried
+                return FetchResult(url=url, skipped=f"refused: {exc}")
             except httpx.HTTPError as exc:
                 last_error = f"{type(exc).__name__}: {exc}"
                 if attempt < self.retries:
