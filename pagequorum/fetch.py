@@ -30,6 +30,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from urllib.parse import urlsplit
 
+import httpcore
 import httpx
 from protego import Protego
 
@@ -60,19 +61,78 @@ def private_address(url: str) -> str | None:
     if not host:
         return None
     try:
-        addresses = {ipaddress.ip_address(host)}
+        addresses = _resolve(host)
+    except (OSError, UnicodeError, ValueError):
+        return None
+    return _private_reason(host, addresses)
+
+
+def _resolve(host: str) -> list[ipaddress.IPv4Address | ipaddress.IPv6Address]:
+    """The host's addresses, in the resolver's order (an IP literal is its own address)."""
+    try:
+        return [ipaddress.ip_address(host.strip("[]"))]
     except ValueError:
-        try:
-            addresses = {ipaddress.ip_address(info[4][0].split("%", 1)[0])
-                         for info in socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)}
-        except (OSError, UnicodeError, ValueError):
-            return None
+        pass
+    found = []
+    for info in socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP):
+        address = ipaddress.ip_address(info[4][0].split("%", 1)[0])
+        if address not in found:
+            found.append(address)
+    return found
+
+
+def _private_reason(host: str, addresses) -> str | None:
     for address in addresses:
-        if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
-            address = address.ipv4_mapped
-        if not address.is_global or address.is_multicast:
-            return f"{host} is a private-network address ({address})"
+        plain = address.ipv4_mapped if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped else address
+        if not plain.is_global or plain.is_multicast:
+            return f"{host} is a private-network address" + ("" if str(plain) == host else f" ({plain})")
     return None
+
+
+class _PublicOnlyBackend(httpcore.NetworkBackend):
+    """Opens every TCP connection the way httpcore would, except that the host is resolved
+    once, refused if any of its addresses is private, and the socket connects to one of the
+    addresses that was checked. Checking a name and then letting the connection resolve it
+    again would let a DNS answer change in between (DNS rebinding). TLS still verifies the
+    certificate against the host name, which httpcore passes separately."""
+
+    def __init__(self, inner: httpcore.NetworkBackend | None = None):
+        self.inner = inner or httpcore.SyncBackend()
+
+    def connect_tcp(self, host, port, timeout=None, local_address=None, socket_options=None):
+        try:
+            addresses = _resolve(host)
+        except (OSError, UnicodeError, ValueError) as exc:
+            raise httpcore.ConnectError(f"could not resolve {host}: {exc}") from exc
+        if not addresses:
+            raise httpcore.ConnectError(f"could not resolve {host}")
+        if why := _private_reason(host, addresses):
+            raise BlockedAddress(why)
+        error: Exception | None = None
+        for address in addresses:
+            try:
+                return self.inner.connect_tcp(str(address), port, timeout=timeout,
+                                              local_address=local_address, socket_options=socket_options)
+            except (httpcore.ConnectError, httpcore.ConnectTimeout) as exc:
+                error = exc
+        raise error
+
+    def connect_unix_socket(self, path, timeout=None, socket_options=None):
+        raise BlockedAddress("unix sockets are not allowed")
+
+    def sleep(self, seconds: float) -> None:
+        self.inner.sleep(seconds)
+
+
+def _public_only_transport() -> httpx.HTTPTransport:
+    """httpx's default transport with every connection going through _PublicOnlyBackend.
+    httpx has no public option for the backend, so it is set on the connection pool; the
+    assertion keeps a future httpx/httpcore from silently dropping the guard."""
+    transport = httpx.HTTPTransport()
+    pool = transport._pool
+    assert isinstance(pool, httpcore.ConnectionPool) and hasattr(pool, "_network_backend")
+    pool._network_backend = _PublicOnlyBackend(pool._network_backend)
+    return transport
 
 
 def _deflate_wbits(head: bytes) -> int:
@@ -268,8 +328,10 @@ class Fetcher:
             follow_redirects=True,
             max_redirects=10,
             timeout=timeout,
-            transport=transport,
-            event_hooks={} if allow_private else {"request": [_refuse_private]},  # runs for every redirect too
+            # private addresses: the request hook gives a clear early refusal (also for every
+            # redirect); the transport checks the address each connection really goes to
+            transport=transport or (None if allow_private else _public_only_transport()),
+            event_hooks={} if allow_private else {"request": [_refuse_private]},
         )
         self.robots = RobotsCache(self.client, user_agent)
         self._last: dict[str, float] = {}

@@ -1180,6 +1180,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "charset-normalizer" },
+    { name = "httpcore" },
     { name = "httpx" },
     { name = "justext" },
     { name = "lxml" },
@@ -1213,6 +1214,7 @@ dev = [
 requires-dist = [
     { name = "charset-normalizer", specifier = ">=3.0" },
     { name = "fastapi", marker = "extra == 'web'", specifier = ">=0.110" },
+    { name = "httpcore", specifier = ">=1.0,<2" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "justext", specifier = ">=3.0" },
     { name = "lxml", specifier = ">=5.2" },

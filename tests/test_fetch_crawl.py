@@ -382,3 +382,57 @@ def test_allow_private_false_refuses_private_addresses_and_redirects_into_them()
     assert f.fetch("https://ex.com/").skipped.startswith("refused: 192.168.1.1")
     assert f.fetch("http://192.168.1.1/admin").skipped.startswith("refused:")
     assert fetcher(httpx.MockTransport(handler), respect_robots=False).fetch("http://192.168.1.1/admin").ok  # default: allowed
+
+
+def test_a_name_that_turns_private_between_the_check_and_the_connection_is_refused(monkeypatch):
+    # DNS rebinding: the name looks public while it is checked, then answers with the cloud
+    # metadata address when the connection resolves it. The connection is what counts.
+    import socket
+
+    from pagequorum import fetch as fetch_mod
+
+    answers = iter(["93.184.215.14", "93.184.215.14"])  # the early check and the request hook
+
+    def rebinding(host, *a, **kw):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (next(answers, "169.254.169.254"), 0))]
+
+    monkeypatch.setattr(fetch_mod.socket, "getaddrinfo", rebinding)
+    monkeypatch.setattr(fetch_mod.httpcore.SyncBackend, "connect_tcp",
+                        lambda *a, **kw: pytest.fail("connected to an unchecked address"))
+    f = fetch_mod.Fetcher(allow_private=False, respect_robots=False, retries=0)
+    assert isinstance(f.client._transport._pool._network_backend, fetch_mod._PublicOnlyBackend)
+    res = f.fetch("http://rebind.test/")
+    assert res.skipped == "refused: rebind.test is a private-network address (169.254.169.254)"
+
+
+def test_the_guard_connects_to_the_address_it_checked_and_fails_closed(monkeypatch):
+    import socket
+
+    import httpcore
+
+    from pagequorum import fetch as fetch_mod
+
+    calls, opened = [], []
+
+    def once(host, *a, **kw):
+        calls.append(host)
+        if host == "gone.test":
+            raise socket.gaierror("no such host")
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.215.14", 0))]
+
+    class Inner:
+        def connect_tcp(self, host, port, **kw):
+            opened.append((host, port))
+            return "stream"
+
+    monkeypatch.setattr(fetch_mod.socket, "getaddrinfo", once)
+    guard = fetch_mod._PublicOnlyBackend(Inner())
+    assert guard.connect_tcp("ex.com", 443) == "stream"
+    assert opened == [("93.184.215.14", 443)] and calls == ["ex.com"]  # resolved once, that IP used
+    with pytest.raises(httpcore.ConnectError):
+        guard.connect_tcp("gone.test", 443)  # unresolvable: no connection, not a pass
+    with pytest.raises(fetch_mod.BlockedAddress):
+        guard.connect_tcp("127.0.0.1", 80)
+    with pytest.raises(fetch_mod.BlockedAddress):
+        guard.connect_unix_socket("/var/run/docker.sock")
+    assert fetch_mod.Fetcher().client._transport.__class__ is httpx.HTTPTransport  # default: unchanged

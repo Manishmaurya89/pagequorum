@@ -6,7 +6,8 @@ list a site's URLs, or extract HTML they already have.
 
 The URLs come from a model, which may have just read a page that tells it to fetch
 something it should not. So private-network addresses (localhost, 10.x, 192.168.x, cloud
-metadata at 169.254.169.254, ...) are refused, including redirects into them. Set
+metadata at 169.254.169.254, ...) are refused, including redirects into them, checked on the
+address each connection really opens (so DNS rebinding does not get through). Set
 ``PAGEQUORUM_ALLOW_PRIVATE=1`` in the server's environment to allow them, e.g. to read
 your own development server. robots.txt is respected as usual.
 """
