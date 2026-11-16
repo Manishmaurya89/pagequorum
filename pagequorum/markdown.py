@@ -9,6 +9,7 @@ nested lists, block quotes, code fences (with language) and GitHub-style tables
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from urllib.parse import urljoin, urlsplit
 
@@ -18,11 +19,96 @@ from .dom import HEADINGS, Block, is_block_element, pre_text
 from .text import normalize_ws
 
 _WS = re.compile(r"[ \t\r\f\v\n]+")
+_EMPHASIS_RUN = re.compile(r"\*+|_+")
+_BACKSLASH_PUNCT = re.compile(r"\\(?=[!-/:-@\[-`{-~])")
+
+
+def _char_kind(c: str) -> str:
+    """CommonMark's classes for flanking rules: whitespace, punctuation (Unicode P and S)
+    or other. A text node's edge counts as punctuation: what lies beyond it is unknown."""
+    if not c:
+        return "punct"
+    if c.isspace():
+        return "space"
+    return "punct" if unicodedata.category(c)[0] in "PS" else "word"
+
+
+def escape_emphasis(s: str) -> str:
+    """Backslash-escape the ``*`` and ``_`` in page text that a Markdown renderer could
+    read as emphasis, so ``Lib/json/__init__.py`` does not come out as "Lib/json/**init**.py".
+    Characters that can never open or close emphasis stay as they are, so most text is
+    unchanged: underscores inside a word (``snake_case``, ``ensure_ascii``) and a ``*`` or
+    ``_`` with whitespace on both sides (``2 * 3``)."""
+    def fix(m: re.Match) -> str:
+        before = _char_kind(s[m.start() - 1] if m.start() else "")
+        after = _char_kind(s[m.end()] if m.end() < len(s) else "")
+        if before == after == "space" or (m.group()[0] == "_" and before == after == "word"):
+            return m.group()
+        return "".join("\\" + ch for ch in m.group())
+
+    if "\\" in s:  # a literal backslash before punctuation would be read as an escape
+        s = _BACKSLASH_PUNCT.sub(r"\\\\", s)
+    return _EMPHASIS_RUN.sub(fix, s) if ("*" in s or "_" in s) else s
+
+
+# Emphasis placeholders (Unicode private use), turned into ``**``/``*`` by resolve_emphasis.
+_OPEN = {"**": "\ue000", "*": "\ue002"}
+_CLOSE = {"**": "\ue001", "*": "\ue003"}
+_MARKER = {"\ue000": "**", "\ue001": "**", "\ue002": "*", "\ue003": "*"}
+
+
+def _left_flanking(before: str, after: str) -> bool:
+    a, b = _char_kind(before), _char_kind(after)
+    return b != "space" and (b != "punct" or a in ("space", "punct"))
+
+
+def _right_flanking(before: str, after: str) -> bool:
+    a, b = _char_kind(before), _char_kind(after)
+    return a != "space" and (a != "punct" or b in ("space", "punct"))
+
+
+def resolve_emphasis(text: str) -> str:
+    """Turn emphasis placeholders into ``**``/``*`` where a Markdown reader will see
+    emphasis (CommonMark's flanking rules, checked against the real neighbours), and
+    drop the pair where it would not: ``Station*,”* went`` would show stray asterisks,
+    while ``**Source code:** Lib`` is fine. Touching spans of one kind are joined first;
+    dropping a pair only loses the style."""
+    if not any(c in text for c in _MARKER):
+        return text
+    lines = []
+    for line in text.split("\n"):
+        if not any(c in line for c in _MARKER):
+            lines.append(line)
+            continue
+        # touching spans of one kind are one span: <em>Live Science</em><em>.</em>
+        line = line.replace("\ue003\ue002", "").replace("\ue001\ue000", "")
+
+        def outside(i: int, step: int, line: str = line) -> str:  # nearest real char; a line edge is whitespace
+            i += step
+            while 0 <= i < len(line) and line[i] in _MARKER:
+                i += step
+            return line[i] if 0 <= i < len(line) else " "
+
+        keep, stack = set(), []
+        for i, c in enumerate(line):
+            if c in ("\ue000", "\ue002"):
+                stack.append(i)
+            elif c in ("\ue001", "\ue003") and stack:
+                j = stack.pop()
+                if (_left_flanking(outside(j, -1), outside(j, 1))
+                        and _right_flanking(outside(i, -1), outside(i, 1))):
+                    keep.update((i, j))
+        lines.append("".join(_MARKER[c] if i in keep else "" if c in _MARKER else c
+                             for i, c in enumerate(line)))
+    return "\n".join(lines)
+
+
 _URL_TAB_NL = re.compile(r"[\t\n\r]")
 _C0_AND_SPACE = "".join(map(chr, range(0x21)))  # what the WHATWG URL parser strips from both ends
 _LINK_SCHEMES = {"http", "https", "mailto"}
 _LANG_CLASS = re.compile(r"(?:^|\s)(?:language|lang|highlight-source|highlight)-([\w+#.-]+)", re.I)
 _NEEDS_ESCAPE = re.compile(r"^(#|>|[-+*]\s|\d+[.)]\s|\||[-=*_]{3,}\s*$)")
+_HEADING_UNESCAPE = re.compile(r"^\\(?=[#>|+=\-]|\d)")  # what _finish escapes at a line start
 _LIST_START = re.compile(r"^([-+*]|\d+[.)]) ")
 # Admonitions/callouts: Sphinx and MkDocs (div.admonition > p.admonition-title),
 # GitHub (div.markdown-alert > p.markdown-alert-title), Docusaurus (admonitionHeading_*).
@@ -110,6 +196,11 @@ class Renderer:
     def _space(s: str) -> str:
         return _WS.sub(" ", s)
 
+    def _text(self, s: str) -> str:
+        """A run of page text as it goes into the output."""
+        s = _WS.sub(" ", s)
+        return s if self.opts.plain else escape_emphasis(s)
+
     def _wrap(self, inner: str, marker: str) -> str:
         if self.opts.plain or not self.opts.formatting:
             return inner
@@ -117,7 +208,9 @@ class Renderer:
         lead, core, trail = m.group(1), m.group(2), m.group(3)
         if not core or "\n" in core:
             return inner
-        return f"{lead}{marker}{core}{marker}{trail}"
+        # placeholders: whether the markers work depends on the characters around them,
+        # known only once the line is complete (see resolve_emphasis)
+        return f"{lead}{_OPEN[marker]}{core}{_CLOSE[marker]}{trail}"
 
     def _finish(self, raw: str) -> str:
         """Turn an inline buffer into one or more paragraphs (``<br><br>`` splits them)."""
@@ -148,15 +241,15 @@ class Renderer:
         if tag in ("code", "kbd", "samp", "tt"):
             code = el.text_content()
             if self.opts.plain or not self.opts.formatting or not code.strip() or "\n" in code.strip():
-                return self._space(code)
+                return self._text(code)
             fence = "``" if "`" in code else "`"
             pad = " " if code.startswith("`") or code.endswith("`") else ""
             return f"{fence}{pad}{code.strip()}{pad}{fence}"
-        inner = self._space(el.text or "")
+        inner = self._text(el.text or "")
         for child in el:
             if isinstance(child.tag, str):
                 inner += self._inline(child)
-            inner += self._space(child.tail or "")
+            inner += self._text(child.tail or "")
         if tag in ("strong", "b"):
             return self._wrap(inner, "**")
         if tag in ("em", "i"):
@@ -196,7 +289,7 @@ class Renderer:
 
         def walk(node) -> None:
             nonlocal seg, mark
-            buf.append(self._space(node.text or ""))
+            buf.append(self._text(node.text or ""))
             for child in node:
                 if not isinstance(child.tag, str):
                     pass
@@ -211,7 +304,7 @@ class Renderer:
                     walk(child)  # inline wrapper around blocks: treat as transparent
                 else:
                     buf.append(self._inline(child))
-                buf.append(self._space(child.tail or ""))
+                buf.append(self._text(child.tail or ""))
 
         walk(el)
         flush()
@@ -231,7 +324,7 @@ class Renderer:
             if not parts:
                 return []
             if self._is_kept(el) and not self.opts.plain:
-                return ["#" * int(tag[1]) + " " + " ".join(p.replace("\n", " ") for p in parts).lstrip("\\")]
+                return ["#" * int(tag[1]) + " " + _HEADING_UNESCAPE.sub("", " ".join(p.replace("\n", " ") for p in parts))]
             return parts
         if tag == "blockquote":
             parts = self.flow(el)
@@ -414,5 +507,5 @@ def render(root: lxml_html.HtmlElement, blocks: list[Block], kept: set[int], bas
            opts: RenderOptions) -> tuple[str, list[Link]]:
     renderer = Renderer({(b.el, b.segment): b for b in blocks}, kept, base_url, opts)
     parts = renderer.flow(root) if root.tag not in HEADINGS else renderer.block(root)
-    text = "\n\n".join(p for p in parts if p.strip())
+    text = resolve_emphasis("\n\n".join(p for p in parts if p.strip()))
     return text, renderer.links

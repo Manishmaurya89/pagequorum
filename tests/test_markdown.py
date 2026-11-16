@@ -150,3 +150,42 @@ def test_links_that_could_run_script_are_dropped():
     text, links = render(body, blocks, {b.index for b in blocks}, "https://example.com/a/", RenderOptions(links=True))
     assert [l.url for l in links] == ["https://example.com/ok", "mailto:x@example.com"]
     assert "script" not in text.lower() and "data:" not in text and "[f](https://example.com/ok)" in text
+
+
+def test_page_text_that_looks_like_emphasis_is_escaped_only_where_it_could_be():
+    out = md('<p><strong>Source code:</strong> <a href="/x">Lib/json/__init__.py</a></p>'
+             "<p>Use snake_case and ensure_ascii; 2 * 3 = 6. Call f(*args, **kw). Names: Ali***, @tasty_.</p>"
+             "<p>Real <em>italic</em> and <code>__init__</code> stay.</p>")
+    assert "**Source code:** Lib/json/\\_\\_init\\_\\_.py" in out
+    assert "snake_case and ensure_ascii; 2 * 3 = 6." in out  # these can never become emphasis
+    assert "f(\\*args, \\*\\*kw)" in out and "Ali\\*\\*\\*" in out and "@tasty\\_." in out
+    assert "Real *italic* and `__init__` stay." in out  # our own markup and code spans untouched
+
+
+def test_escaping_is_markdown_only_and_keeps_literal_backslashes():
+    html = "<p>C:\\Users\\me and a literal \\_ in __main__</p>"
+    assert md(html, plain=True) == "C:\\Users\\me and a literal \\_ in __main__"
+    assert md(html) == "C:\\Users\\me and a literal \\\\\\_ in \\_\\_main\\_\\_"
+
+
+def test_a_heading_keeps_its_escapes():
+    assert md("<h2>The __init__ module</h2>") == "## The \\_\\_init\\_\\_ module"
+    assert md("<h2>1. Intro</h2>") == "## 1. Intro"  # the line-start escape is still dropped
+
+
+def test_emphasis_is_written_only_where_a_markdown_reader_sees_it():
+    # a colon before the closing marker is fine when a space follows
+    assert md("<p><strong>Source code:</strong> Lib/json</p>") == "**Source code:** Lib/json"
+    # touching spans of one kind become one span instead of *Live Science**.*
+    assert md("<p>Read <em>Live Science</em><em>.</em></p>") == "Read *Live Science.*"
+    # punctuation-only emphasis glued to words cannot render: keep the text, drop the style
+    assert md("<p>“Winter Solstice, Camelot Station<em>,”</em> went on</p>") == \
+        "“Winter Solstice, Camelot Station,” went on"
+    assert md("<p>Follow us on Instagram<em>,</em> Facebook</p>") == "Follow us on Instagram, Facebook"
+
+
+def test_emphasis_placeholders_never_reach_the_output():
+    out = md("<p><b><i>both</i></b>, <i>a</i><b>b</b> and <em> </em>x</p><table><tr><th><b>H</b></th></tr>"
+             "<tr><td><i>c</i></td></tr><tr><td>d</td></tr><tr><td>e</td></tr><tr><td>f</td></tr></table>")
+    assert not any("" <= ch <= "" for ch in out)
+    assert "***both***" in out and "*a***b**" in out

@@ -96,3 +96,10 @@ def test_citation_keeps_literal_characters_inside_code_and_escapes():
     assert unquote(url.split("#:~:text=")[1]) == "json.dump(obj, fp, *, skipkeys=False)"
     url = citation_url("https://d.example/x", r"Use \*args and **keyword** arguments in calls")
     assert unquote(url.split("#:~:text=")[1]) == "Use *args and keyword arguments in"
+
+
+def test_citation_link_uses_the_text_a_reader_sees():
+    from pagequorum.chunk import citation_url
+
+    url = citation_url("https://ex.com/p", "Source code: Lib/json/\\_\\_init\\_\\_.py is the module file")
+    assert url.endswith("#:~:text=Source%20code%3A%20Lib%2Fjson%2F__init__.py%20is%20the%20module")
