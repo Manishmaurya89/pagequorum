@@ -18,7 +18,9 @@
   numbers were *seen* seven times during development (0.945, 0.958, 0.960, 0.963,
   then 0.963 twice more after the docs-page and Wikipedia fixes, against
   trafilatura's 0.963), and a seventh time (0.963, unchanged) when comparing with
-  other tools in `compare.py`. No choice was made on them. Every comparison between
+  other tools in `compare.py`. An eighth look, on 2026-11-17, re-verified everything
+  from a fresh clone and a fresh benchmark download, and scored it with the
+  benchmark's own `evaluate.py` (`official.py`): unchanged. No choice was made on them. Every comparison between
   alternatives below used dev only, and the last changes were prompted by live
   pages (Python json docs, Hindi Wikipedia), not by the benchmark.
 

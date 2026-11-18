@@ -39,11 +39,13 @@ only the parts they agree on.
 ## Why pagequorum
 
 - 🎯 **Less boilerplate in your index.** On held-out benchmark pages, precision is 0.962,
-  where trafilatura gets 0.947. On 43% of those pages the output is *exactly* the
-  human-labelled article text; trafilatura manages 34% ([details](#accuracy)).
-- 🚦 **It tells you when a page was hard.** Every page gets an agreement score. Pages
-  where extraction went wrong (F1 < 0.8) average 0.75; the rest average 0.89.
-  Low scores are the ones worth a look.
+  where trafilatura gets 0.947: a small gain, about two standard errors. On 43% of those
+  pages the output is *exactly* the human-labelled article text; trafilatura manages 34%.
+  Overall F1 is a tie ([details](#accuracy)).
+- 🚦 **It tells you when a page was hard.** Every page gets an agreement score. In the
+  benchmark, the 5 pages where extraction went wrong (F1 < 0.8) averaged 0.75 and the
+  other 176 averaged 0.89. Five pages are a hint, not proof, but low scores are the ones
+  worth a look.
 - 🧱 **Structure survives.** Headings, nested lists, tables (header repeated when split),
   fenced code with its language, block quotes and footnotes come out as Markdown.
 - 🔗 **Chunks that cite their source.** Each chunk knows its section path and its exact
@@ -179,18 +181,24 @@ into **dev** (95 pages, the only ones used for every design and tuning decision)
 What this does and does not show:
 
 - pagequorum is **not** the most accurate extractor here. On held-out pages,
-  rs-trafilatura and Zyte's commercial AutoExtract are about 0.01 F1 ahead.
-  AutoExtract also keeps less boilerplate (precision 0.984 vs 0.969 over all pages).
+  rs-trafilatura and Zyte's commercial AutoExtract score about 0.01 F1 higher. On 86
+  pages that gap is within the margin of error (paired bootstrap: −0.011 ± 0.012 against
+  rs-trafilatura), so read the top six as close, not as a ranking. rs-trafilatura keeps
+  more of the article (recall 0.989 vs 0.964) and AutoExtract keeps less boilerplate
+  (precision 0.986 vs 0.962).
 - Against its own voters, pagequorum's held-out F1 **ties** trafilatura 2.3 (0.963). The
-  real gain is **precision**: 0.962 vs 0.947 held out, which means less boilerplate in
-  your index. The output is also exactly the labelled article body on **43%** of
-  held-out pages, against 34%. The price is slightly lower recall (0.964 vs 0.978).
+  gain is **precision**: 0.962 vs 0.947 held out (+0.015 ± 0.007 in a paired bootstrap:
+  small, about two standard errors), which means less boilerplate in your index. The
+  output is also exactly the labelled article body on **43%** of held-out pages, against
+  34% (95% interval for the difference: +2 to +17 points). The price is slightly lower
+  recall (0.964 vs 0.978).
 - Crawl4AI keeps nearly all of the article (recall 0.976), but also a lot that is not
   article: "you may also like" links, comment boxes and the like. Its median output is
   797 words where the labelled article has 529 (pagequorum: 539). Adding its
   `excluded_tags` clean-up option did not help (0.794 held out).
-- Firecrawl was not run here. An independent run with the same scorer and the same
-  Markdown clean-up reported F1 0.785 (precision 0.660) with `onlyMainContent`
+- Firecrawl was not run here. An independent run of self-hosted Firecrawl with
+  `onlyMainContent`, the same scorer and the same Markdown clean-up reported F1 0.785
+  (precision 0.660) on all 181 pages; that run has no held-out split
   ([robertz.co, October 2026](https://robertz.co/knowledge/computer-science/ai-llm-engineering/web-scraper-extraction-quality/)).
 - These are news and blog pages, which suit article extractors. Crawl4AI and Firecrawl
   also render JavaScript and crawl at scale, which this benchmark does not measure.
@@ -234,9 +242,16 @@ URLs are not counted against it.
 
 </details>
 
-Reproduce: `uv run python bench/download_aeb.py && uv run python bench/aeb.py`, and for
+**Checked with the benchmark's own scorer.** [`bench/official.py`](bench/official.py) scores
+every tool with the benchmark repository's `evaluate.py`, unchanged, on all pages and on
+the held-out pages. It gives the same numbers as our scorer and runs the paired bootstrap
+quoted above ([`bench/results/official.md`](bench/results/official.md)). On 2026-11-17 the
+whole benchmark was re-run from a fresh clone of this repository and a fresh download of
+the benchmark, and every number matched.
+
+Reproduce: `uv run python bench/download_aeb.py && uv run python bench/aeb.py`, for
 the comparison `uv run --no-project --with crawl4ai==0.9.5 python bench/run_crawl4ai.py`,
-then `uv run python bench/compare.py`. The chart is drawn from those results by
+then `uv run python bench/compare.py`, and for the official check `uv run python bench/official.py`. The chart is drawn from those results by
 `python3 docs/make_chart.py`. [`bench/README.md`](bench/README.md) has the method and a
 log of everything tried, including what did not work.
 

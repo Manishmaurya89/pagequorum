@@ -1,13 +1,14 @@
 """Draws docs/images/f1-{light,dark}.svg, the README's accuracy chart, from
 bench/results/compare.md (python3 docs/make_chart.py; standard library only).
-Firecrawl was not run here: its number is the independent run cited in the README."""
+Firecrawl was not run here: its number is the independent run cited in the README,
+scored on all 181 pages (that run has no held-out split)."""
 
 import re
 from html import escape
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-FIRECRAWL = ("Firecrawl (onlyMainContent) †", 0.785)
+FIRECRAWL = ("Firecrawl, self-hosted †", 0.785)
 NAMES = {  # README names for the rows of compare.md that the chart shows
     "rs-trafilatura (saved output)": "rs-trafilatura",
     "Zyte AutoExtract (commercial; saved Nov 2019 output)": "Zyte AutoExtract (commercial)",
@@ -38,7 +39,7 @@ def svg(theme: dict) -> str:
     left, right, top, row, bar_h = 232, 70, 74, 30, 18
     width = 760
     plot = width - left - right
-    height = top + row * len(data) + 46
+    height = top + row * len(data) + 64
     sans = "-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif"
     mono = "ui-monospace,SFMono-Regular,Menlo,Consolas,monospace"
     t = theme
@@ -68,9 +69,12 @@ def svg(theme: dict) -> str:
                    f'fill="{t["accent"] if ours else t["bar"]}"/>')
         out.append(f'<text x="{left + w + 8:.1f}" y="{y + 13.5}" font-family="{mono}" font-size="12"{weight} '
                    f'fill="{t["ink"]}" stroke="{t["page"]}" stroke-width="5" paint-order="stroke">{value:.3f}</text>')
+    out.append(f'<text x="0" y="{height - 24}" font-family="{sans}" font-size="11.5" fill="{t["muted"]}">'
+               "On 86 pages, gaps of about 0.01 among the top six are within the margin of error "
+               "(paired bootstrap, bench/results/official.md).</text>")
     out.append(f'<text x="0" y="{height - 6}" font-family="{sans}" font-size="11.5" fill="{t["muted"]}">'
-               "† not run here: an independent run with the same scorer (robertz.co, October 2026). "
-               "Details and caveats under Accuracy.</text>")
+               "† not run here: self-hosted Firecrawl (onlyMainContent), independent run, same scorer, "
+               "all 181 pages (robertz.co, Oct 2026).</text>")
     out.append("</svg>")
     return "\n".join(out) + "\n"
 

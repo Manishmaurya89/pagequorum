@@ -1,8 +1,9 @@
 """Fetch the article-extraction-benchmark (MIT licence) into bench/data/aeb.
 
 Shallow git clone of https://github.com/scrapinghub/article-extraction-benchmark
-(about 100 MB on disk). Only ground-truth.json and html/*.html.gz are read; no
-code from the benchmark repository is executed.
+(about 100 MB on disk). This script runs no code from the benchmark repository;
+bench/aeb.py reads only ground-truth.json and html/*.html.gz, and bench/official.py
+runs the repository's evaluate.py (standard library only) as an independent check.
 """
 
 import subprocess
