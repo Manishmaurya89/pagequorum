@@ -20,6 +20,7 @@ the numbers.
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import math
 import os
@@ -84,7 +85,7 @@ class RateLimiter:
         self._lock = threading.Lock()
 
     def _recent(self, key: str, now: float) -> deque[float]:
-        q = self._hits.setdefault(key, deque())
+        q = self._hits.get(key, deque())  # a check alone never stores a key
         while q and q[0] <= now - self.window:
             q.popleft()
         return q
@@ -99,7 +100,9 @@ class RateLimiter:
     def add(self, key: str) -> None:
         with self._lock:
             now = self._clock()
-            self._recent(key, now).append(now)
+            q = self._recent(key, now)
+            q.append(now)
+            self._hits[key] = q
             if len(self._hits) > self.MAX_KEYS:  # forget visitors with nothing in the window
                 for k in [k for k, q in self._hits.items() if not q or q[-1] <= now - self.window]:
                     del self._hits[k]
@@ -350,8 +353,11 @@ def create_app(fetcher: Fetcher | None = None, fetcher_factory: Callable[[], Fet
         busy = threading.BoundedSemaphore(public.concurrent)
 
     def visitor(request: Request) -> str:
-        if client_ip_header and (v := request.headers.get(client_ip_header, "").strip()):
-            return v
+        if client_ip_header:
+            try:  # only a well-formed address counts; anything else falls back to the connection
+                return str(ipaddress.ip_address(request.headers.get(client_ip_header, "").strip()))
+            except ValueError:
+                pass
         return request.client.host if request.client else "?"
 
     def admit(request: Request, kind: str) -> str:

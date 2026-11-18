@@ -176,3 +176,18 @@ def test_huge_bodies_are_refused_before_they_are_read():
     r = c.post("/api/scrape", content=chunks(), headers={"content-type": "application/json"})
     assert r.status_code == 413
     assert c.post("/api/scrape", json={"html": "<p>small</p>"}).status_code == 200
+
+
+def test_rate_limiter_checks_store_nothing():
+    rl = RateLimiter(1, 60)
+    for i in range(100):
+        rl.wait(f"visitor-{i}")
+    assert rl._hits == {}
+
+
+def test_a_malformed_client_ip_header_is_not_a_visitor_key(article_html):
+    c = public_client(site(article_html), scrapes_per_minute=1)
+    assert c.post("/api/scrape", json={"html": article_html}, headers={"True-Client-IP": "junk-1"}).status_code == 200
+    # a different junk value is the same visitor (the connection's address), so no fresh allowance
+    r = c.post("/api/scrape", json={"html": article_html}, headers={"True-Client-IP": "junk-2"})
+    assert r.status_code == 429
