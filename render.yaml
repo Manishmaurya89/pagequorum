@@ -1,0 +1,23 @@
+# The live server behind the online demo (https://manishmaurya89.github.io/pagequorum/),
+# on Render's free plan: New > Blueprint, pick this repository, Apply.
+#
+# It runs `pagequorum serve --public`: private-network addresses refused, rate limits per
+# visitor and overall, small crawls, size caps (PublicLimits in pagequorum/web.py).
+# On the free plan the service sleeps after 15 idle minutes and takes about a minute to
+# wake; the demo page replays its recorded examples meanwhile.
+services:
+  - type: web
+    name: pagequorum
+    runtime: python
+    plan: free
+    autoDeploy: true
+    buildCommand: uv sync --locked --extra web --no-dev
+    startCommand: uv run --no-sync pagequorum serve --public
+    healthCheckPath: /api/health
+    # Python: .python-version (3.12); uv is set up by Render because uv.lock exists
+    envVars:
+      - key: PAGEQUORUM_CORS_ORIGINS
+        value: https://manishmaurya89.github.io
+      # Render's proxy (Cloudflare) puts the visitor's address here
+      - key: PAGEQUORUM_CLIENT_IP_HEADER
+        value: True-Client-IP

@@ -5,6 +5,8 @@ import json
 import re
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parent.parent
 spec = importlib.util.spec_from_file_location("build_site", ROOT / "scripts" / "build_site.py")
 build_site = importlib.util.module_from_spec(spec)
@@ -56,3 +58,13 @@ def test_recordings_exist_and_have_the_shape_the_page_reads():
 def test_page_switches_to_the_demo_without_a_server():
     assert 'new URL("demo/", location.href)' in PAGE and "manifest.json" in PAGE
     assert 'id="demo-note" hidden' in PAGE  # only shown when no server answers
+
+
+def test_build_can_name_a_live_server():
+    page = build_site.with_api(PAGE, "https://pagequorum.onrender.com/")
+    assert '<meta name="pagequorum-api" id="pq-api" content="https://pagequorum.onrender.com">' in page
+    assert page.index('name="viewport"') < page.index('id="pq-api"') < page.index("<title>")
+    assert 'id="pq-api"' not in PAGE  # the page served by `pagequorum serve` never names one
+    for bad in ("http://pagequorum.onrender.com", "javascript:alert(1)", 'https://x.com/"><script>'):
+        with pytest.raises(SystemExit):
+            build_site.with_api(PAGE, bad)

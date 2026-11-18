@@ -439,6 +439,32 @@ DNS rebinding. Links taken from pages keep only `http`, `https` and `mailto` URL
 Crawl jobs live in memory until the server stops.
 
 <details>
+<summary><b>Public mode: hosting it for others (<code>serve --public</code>)</b></summary>
+
+`pagequorum serve --public` is the hardened server behind the online demo. It
+listens on `0.0.0.0:$PORT` and, unlike the local app:
+
+- refuses private-network addresses (localhost, 10.x, 192.168.x, cloud metadata at
+  169.254.169.254, ...), also through redirects and DNS rebinding;
+- rate-limits each visitor (10 scrapes and 4 maps a minute, 6 crawls an hour) and
+  the whole server (60 requests a minute), and runs at most 2 fetches at once;
+- crawls at most 10 pages, 2 links deep, one crawl per visitor, and takes no
+  include/exclude regular expressions from strangers;
+- caps request bodies at 8 MB, pasted HTML at 2 million characters, and fetched
+  pages and sitemaps at 5 MB;
+- gives every request its own fetcher, so nothing one visitor fetched is kept.
+
+The numbers are in `PublicLimits` in `pagequorum/web.py`. Settings come from the
+environment: `PAGEQUORUM_CORS_ORIGINS` (web pages that may call the API),
+`PAGEQUORUM_ALLOWED_HOSTS` (also `RENDER_EXTERNAL_HOSTNAME`), and
+`PAGEQUORUM_CLIENT_IP_HEADER` (where the host's proxy puts the visitor's address).
+[`render.yaml`](render.yaml) deploys it on Render's free plan (New → Blueprint).
+That plan sleeps after 15 idle minutes and needs about a minute to wake.
+Whoever runs a public server is responsible for the traffic it sends.
+
+</details>
+
+<details>
 <summary><b>The online demo (static hosting)</b></summary>
 
 The same page also works with no server, as a free static site. When `/api/health`
@@ -447,16 +473,21 @@ responses saved in `site/demo/`, a crawl replays page by page, and anything else
 (another URL, other settings, pasted HTML) explains how to run pagequorum locally.
 Code samples then point at `http://127.0.0.1:8000`.
 
+Built with `--api https://…` (or `PAGEQUORUM_API` in `pages.yml`), the page also
+wakes that public server and switches to it once it answers: then any URL works, with
+the public limits. The recordings stand in while it starts.
+
 ```bash
 python3 scripts/build_site.py                              # assemble site/ (no network)
 python3 -m http.server -d site 8001                        # preview it
 uv run --extra web python scripts/build_site.py --record   # re-record the examples
+python3 scripts/build_site.py --api https://pagequorum.onrender.com   # use a live server
 ```
 
 `.github/workflows/pages.yml` publishes it to GitHub Pages on every push to `main`.
 Any other static host works too (build command `python3 scripts/build_site.py`,
-output folder `site`). Scraping never runs on the host: the recordings are plain
-files. Re-record after changing the examples in the page; `tests/test_site.py` fails
+output folder `site`). Scraping never runs on the static host: the recordings are
+plain files. Re-record after changing the examples in the page; `tests/test_site.py` fails
 until you do.
 
 </details>

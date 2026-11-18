@@ -23,6 +23,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: python3 scripts/build_site.py
+        env:
+          # the live server (render.yaml); empty: the page only replays the recordings
+          PAGEQUORUM_API: ""
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

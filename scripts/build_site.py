@@ -8,6 +8,11 @@ On a static host there is none, so the page replays the responses recorded here 
 its example URLs (``site/demo/``) and tells visitors how to run pagequorum for
 anything else. ``site/`` can then be published on any free static host.
 
+    python3 scripts/build_site.py --api https://pagequorum.onrender.com
+
+names a public server (``pagequorum serve --public``, see render.yaml) that the page
+wakes and then uses for any URL; the recordings stand in while it starts.
+
 Recording goes through the real HTTP API in-process, so the files are exactly what
 ``pagequorum serve`` returns for the same requests.
 """
@@ -17,7 +22,9 @@ from __future__ import annotations
 import argparse
 import datetime
 import hashlib
+import html
 import json
+import os
 import re
 import shutil
 import sys
@@ -113,20 +120,38 @@ def record() -> None:
     print(f"recorded into {DEMO} ({size / 1e6:.1f} MB)", file=sys.stderr)
 
 
-def build() -> None:
+def with_api(page: str, api: str) -> str:
+    """The page with the public server's address in a meta tag its script reads."""
+    local = re.fullmatch(r"http://(localhost|127\.0\.0\.1)(:\d+)?/?", api)  # for trying it out
+    if not (local or re.fullmatch(r"https://[A-Za-z0-9.-]+(:\d+)?/?", api)):
+        raise SystemExit(f"--api must be an https:// origin, got {api!r}")
+    tag = f'<meta name="pagequorum-api" id="pq-api" content="{html.escape(api.rstrip("/"))}">\n'
+    anchor = '<meta name="viewport"'
+    if page.count(anchor) != 1:
+        raise SystemExit("no viewport meta tag to put the API address after")
+    i = page.index("\n", page.index(anchor)) + 1
+    return page[:i] + tag + page[i:]
+
+
+def build(api: str = "") -> None:
     if not (DEMO / "manifest.json").exists():
         raise SystemExit(f"no recordings in {DEMO}: run with --record first")
-    shutil.copyfile(PAGE, SITE / "index.html")
+    page = PAGE.read_text(encoding="utf-8")
+    (SITE / "index.html").write_text(with_api(page, api) if api else page, encoding="utf-8")
+    if api:
+        print(f"the page will use the live server at {api}", file=sys.stderr)
     print(f"site ready in {SITE} (preview: python3 -m http.server -d site 8001)", file=sys.stderr)
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--record", action="store_true", help="re-record the examples (needs network and the web extra)")
+    ap.add_argument("--api", default=os.environ.get("PAGEQUORUM_API", ""),
+                    help="origin of a public pagequorum server the page should use (env PAGEQUORUM_API)")
     args = ap.parse_args()
     if args.record:
         record()
-    build()
+    build(args.api.strip())
 
 
 if __name__ == "__main__":

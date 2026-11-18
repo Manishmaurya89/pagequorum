@@ -117,16 +117,20 @@ def cmd_crawl(args) -> int:
 
 def cmd_serve(args) -> int:
     try:
-        from .web import serve
+        from .web import serve, serve_public
     except ImportError:
         print("The web app needs extra packages. Run it with:\n"
               "  uv run --extra web pagequorum serve\n"
               "or install them with:  pip install 'pagequorum[web]'", file=sys.stderr)
         return 2
-    if args.host not in ("127.0.0.1", "localhost", "::1"):
-        print(f"warning: listening on {args.host}; anyone who can reach it can make this machine "
-              "fetch any URL", file=sys.stderr)
-    serve(host=args.host, port=args.port, open_browser=args.open)
+    if args.public:
+        serve_public(host=args.host or "0.0.0.0", port=args.port)
+        return 0
+    host = args.host or "127.0.0.1"
+    if host not in ("127.0.0.1", "localhost", "::1"):
+        print(f"warning: listening on {host}; anyone who can reach it can make this machine "
+              "fetch any URL (use --public for a hardened server)", file=sys.stderr)
+    serve(host=host, port=args.port or 8000, open_browser=args.open)
     return 0
 
 
@@ -187,9 +191,12 @@ def main(argv: list[str] | None = None) -> int:
     c.set_defaults(func=cmd_crawl)
 
     w = sub.add_parser("serve", help="start the local web app (needs the 'web' extra)")
-    w.add_argument("--host", default="127.0.0.1", help="interface to listen on (default 127.0.0.1)")
-    w.add_argument("--port", type=int, default=8000)
+    w.add_argument("--host", help="interface to listen on (default 127.0.0.1; 0.0.0.0 with --public)")
+    w.add_argument("--port", type=int, help="port (default 8000; with --public, $PORT if set)")
     w.add_argument("--open", action="store_true", help="open the app in your browser")
+    w.add_argument("--public", action="store_true",
+                   help="hardened mode for the open internet: no private addresses, rate limits, small "
+                        "crawls (settings from the environment, see pagequorum/web.py)")
     w.set_defaults(func=cmd_serve)
 
     m = sub.add_parser("mcp", help="run as an MCP server for AI assistants (needs the 'mcp' extra)")

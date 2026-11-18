@@ -30,7 +30,6 @@ from .models import Document
 from .urls import in_scope, looks_like_page, normalize_url, rebase_scope, related_site, scope_prefix
 
 _XML_PARSER = etree.XMLParser(resolve_entities=False, no_network=True, recover=True, huge_tree=False)
-_MAX_SITEMAP_BYTES = 20_000_000
 
 
 @dataclass
@@ -81,13 +80,13 @@ def _sitemap_urls(fetcher: Fetcher, start_url: str, limit: int) -> list[str]:
             continue
         try:
             fetcher._wait_turn(sm)
-            r, body, too_big = read_capped(fetcher.client, sm, _MAX_SITEMAP_BYTES)
+            r, body, too_big = read_capped(fetcher.client, sm, fetcher.max_sitemap_bytes)
         except httpx.HTTPError:
             continue
         if r.status_code >= 400 or too_big:
             continue
         if body[:2] == b"\x1f\x8b":  # a .xml.gz file (not HTTP Content-Encoding, which httpx undoes)
-            body = _gunzip_capped(body, _MAX_SITEMAP_BYTES)
+            body = _gunzip_capped(body, fetcher.max_sitemap_bytes)
             if body is None:
                 continue
         try:

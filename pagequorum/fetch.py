@@ -304,6 +304,7 @@ class Fetcher:
         timeout: float = 20.0,
         retries: int = 2,
         max_bytes: int = 15_000_000,
+        max_sitemap_bytes: int = 20_000_000,
         cache_dir: str | Path | None = None,
         transport: httpx.BaseTransport | None = None,
         allow_private: bool = True,
@@ -316,6 +317,7 @@ class Fetcher:
         self.timeout = timeout
         self.retries = retries
         self.max_bytes = max_bytes
+        self.max_sitemap_bytes = max_sitemap_bytes
         self.cache_dir = Path(cache_dir) if cache_dir else None
         self.allow_private = allow_private
         self.client = httpx.Client(

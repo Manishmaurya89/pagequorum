@@ -202,12 +202,11 @@ def test_robots_txt_is_read_only_up_to_500_kib():
     assert f.fetch("https://ex.com/late/x").ok  # the rule after the limit is not read
 
 
-def test_oversized_and_zip_bomb_sitemaps_are_skipped(monkeypatch):
+def test_oversized_and_zip_bomb_sitemaps_are_skipped():
     import gzip
     import importlib
 
     crawl_mod = importlib.import_module("pagequorum.crawl")
-    monkeypatch.setattr(crawl_mod, "_MAX_SITEMAP_BYTES", 10_000)
 
     def urlset(loc: str, pad: int = 0) -> bytes:
         return (f'<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>{loc}</loc></url>'
@@ -222,7 +221,9 @@ def test_oversized_and_zip_bomb_sitemaps_are_skipped(monkeypatch):
         "/ok.xml.gz": (200, "application/gzip", gzip.compress(urlset("https://ex.com/good"))),
     }
     robots = "User-agent: *\nAllow: /\n" + "".join(f"Sitemap: https://ex.com{p}\n" for p in routes)
-    found = crawl_mod._sitemap_urls(fetcher(site(routes, robots=(200, robots))), "https://ex.com/", 100)
+    f = fetcher(site(routes, robots=(200, robots)))
+    f.max_sitemap_bytes = 10_000
+    found = crawl_mod._sitemap_urls(f, "https://ex.com/", 100)
     assert found == ["https://ex.com/good"]
 
 

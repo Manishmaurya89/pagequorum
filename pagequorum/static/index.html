@@ -699,10 +699,16 @@ pagequorum serve --open</pre><button type="button" class="btn ghost small" id="d
   // ---------- server, or the recorded online demo ----------
   // Run with `pagequorum serve`, every request goes to the API. On a static host there is
   // no API, so the example links replay responses recorded by scripts/build_site.py.
+  // If the build named a public server (<meta name="pagequorum-api">), the page wakes it
+  // and switches to it once it answers; until then the recordings stand in.
   const DEMO_BASE = new URL("demo/", location.href).href;
+  const REMOTE = (($("pq-api") || {}).content || "").replace(/\/+$/, "");
   let live = false, demo = null;  // demo: { manifest, files, job }
-  const ready = fetch("/api/health", { headers: { Accept: "application/json" } })
-    .then((r) => (r.ok ? r.json() : null)).catch(() => null)
+  let API = "";  // where API requests go: "" is this server, else the public server
+  let waking = false;
+  const getJson = (url, ms) => fetch(url, { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(ms) })
+    .then((r) => (r.ok ? r.json() : null)).catch(() => null);
+  const ready = getJson("/api/health", 5000)
     .then(async (h) => {
       if (h && h.ok) { live = true; $("version").textContent = `v${h.version} · running locally`; $("foot-version").textContent = "version " + h.version; return; }
       try {
@@ -710,7 +716,43 @@ pagequorum serve --open</pre><button type="button" class="btn ghost small" id="d
         if (r.ok) demo = { manifest: await r.json(), files: {}, job: null };
       } catch (e) { /* no recordings either */ }
       enterDemo();
+      if (REMOTE) wakeRemote();
     });
+
+  // A free server sleeps when idle and takes about a minute to start again.
+  async function wakeRemote() {
+    waking = true;
+    $("version").textContent = "waking the live server…";
+    $("demo-intro").textContent = "Waking the live server (it sleeps when nobody uses it; this takes up to a minute). Until it answers, the example links replay results recorded on " + (demo ? demo.manifest.recorded_at : "an earlier day") + ".";
+    const until = Date.now() + 180000;
+    while (Date.now() < until) {
+      const h = await getJson(REMOTE + "/api/health", 15000);
+      if (h && h.ok) { waking = false; goLive(h); return; }
+      await sleep(5000);
+    }
+    waking = false;
+    $("version").textContent = demo ? "online demo · recorded results" : "no server";
+    $("demo-intro").textContent = "The live server is not answering right now (it may be resting after heavy use), so the example links replay recorded results.";
+  }
+
+  function goLive(h) {
+    live = true; API = REMOTE; ORIGIN = REMOTE;
+    document.body.classList.remove("is-demo");
+    $("toggle-html").hidden = false;
+    $("version").textContent = `v${h.version} · live server`;
+    $("foot-version").textContent = "version " + h.version;
+    $("nav-ref").href = REMOTE + "/redoc";
+    const lim = h.public || {};
+    $("demo-intro").textContent = "";
+    $("demo-intro").append(el("b", { text: "Live server. " }),
+      `Scrape, crawl or map any public page. It is a small free server shared by everyone, so it has limits: ${lim.scrapes_per_minute ?? 10} scrapes a minute per visitor, crawls of up to ${lim.crawl_pages ?? 10} pages, no private-network addresses.`);
+    const lead = $("api-lead"); lead.textContent = "";
+    lead.append("Everything the playground does is a JSON API, here served by the live server at ", el("span", { class: "mono", text: REMOTE }),
+      " (same limits). Schemas are in its ", el("a", { href: REMOTE + "/redoc", target: "_blank", rel: "noopener", text: "API reference" }),
+      ". For your own projects, run ", el("span", { class: "mono", text: "pagequorum serve" }), " on your computer: no limits.");
+    renderEndpoints();
+    refreshCode();
+  }
 
   function enterDemo() {
     document.body.classList.add("is-demo");
@@ -753,6 +795,7 @@ pagequorum serve --open</pre><button type="button" class="btn ghost small" id="d
   function demoMiss(kind, body) {
     const verb = { scrape: "scrape", crawl: "crawl", map: "map" }[kind];
     const what = body.html ? "extract pasted HTML" : `${verb} ${body.url ? decoded(body.url) : "another page"}`;
+    if (waking) return `The live server is still waking up (up to a minute). Try again in a moment; until then only the example links work, with the default settings.`;
     return `The online demo only replays recorded results for the example links, with the default settings. To ${what}, run pagequorum on your computer (see “Run it yourself” above).`;
   }
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -792,9 +835,14 @@ pagequorum serve --open</pre><button type="button" class="btn ghost small" id="d
 
   async function api(method, path, body) {
     await ready;
-    if (demo) return demoApi(method, path, body);
+    if (demo && (!live || path.startsWith("/api/crawl/demo"))) return demoApi(method, path, body);
     if (!live) throw new Error("No pagequorum server is answering here. Run it on your computer (see “Run it yourself” above).");
-    const r = await fetch(path, { method, headers: body ? { "Content-Type": "application/json" } : {}, body: body ? JSON.stringify(body) : undefined });
+    let r;
+    try {
+      r = await fetch(API + path, { method, headers: body ? { "Content-Type": "application/json" } : {}, body: body ? JSON.stringify(body) : undefined });
+    } catch (e) {
+      throw new Error(API ? "The live server did not answer. It may be busy or restarting; try again in a minute." : "The server did not answer.");
+    }
     const j = await r.json().catch(() => ({}));
     if (!r.ok) {
       const d = Array.isArray(j.detail) ? j.detail.map((x) => String(x.msg).replace(/^Value error, /, "")).join("; ") : (j.detail || r.statusText);
@@ -1046,8 +1094,8 @@ pagequorum serve --open</pre><button type="button" class="btn ghost small" id="d
     const r = await api("POST", "/api/crawl", req.body);
     state.job = { id: r.id, pages: [], running: true };
     $("c-rows").textContent = ""; $("c-empty").hidden = false; $("c-empty").textContent = "Waiting for the first page…";
-    $("c-dl-chunks").href = (r.downloads && r.downloads.chunks) || `/api/crawl/${r.id}/chunks.jsonl`;
-    $("c-dl-docs").href = (r.downloads && r.downloads.documents) || `/api/crawl/${r.id}/documents.jsonl`;
+    $("c-dl-chunks").href = (r.downloads && r.downloads.chunks) || `${API}/api/crawl/${r.id}/chunks.jsonl`;
+    $("c-dl-docs").href = (r.downloads && r.downloads.documents) || `${API}/api/crawl/${r.id}/documents.jsonl`;
     $("crawl-result").hidden = false;
     reveal("crawl-result");
     setStatus(demo ? "Replaying a recorded crawl: pages appear below one by one."
@@ -1100,7 +1148,7 @@ pagequorum serve --open</pre><button type="button" class="btn ghost small" id="d
   function renderEndpoints() {
     const eps = [
       ["POST", "/api/scrape", "Scrape a page", "Clean Markdown, plain text, metadata, RAG chunks with citation links, and the keep/drop decision for every block.", `curl -X POST ${ORIGIN}/api/scrape \\\n  -H 'Content-Type: application/json' \\\n  -d '{"url": "https://docs.python.org/3/library/json.html"}'\n\n# → { "document": { "title", "markdown", "text", ... },\n#     "chunks": [ { "text", "heading_path", "citation_url", ... } ],\n#     "blocks": [ { "kept", "reason", "votes", ... } ] }`],
-      ["POST", "/api/crawl", "Crawl a site", "Starts a background job that follows links and the sitemap, skips duplicates and respects robots.txt. Poll it, then download every chunk as one JSONL file.", `curl -X POST ${ORIGIN}/api/crawl \\\n  -H 'Content-Type: application/json' \\\n  -d '{"url": "https://www.python-httpx.org/", "max_pages": 20}'\n# → { "id": "3f2a9c1b7e04", "status": "running" }\n\ncurl ${ORIGIN}/api/crawl/3f2a9c1b7e04\ncurl -O ${ORIGIN}/api/crawl/3f2a9c1b7e04/chunks.jsonl`],
+      ["POST", "/api/crawl", "Crawl a site", "Starts a background job that follows links and the sitemap, skips duplicates and respects robots.txt. Poll it, then download every chunk as one JSONL file.", `curl -X POST ${ORIGIN}/api/crawl \\\n  -H 'Content-Type: application/json' \\\n  -d '{"url": "https://www.python-httpx.org/", "max_pages": 10}'\n# → { "id": "3f2a9c1b7e04", "status": "running" }\n\ncurl ${ORIGIN}/api/crawl/3f2a9c1b7e04\ncurl -O ${ORIGIN}/api/crawl/3f2a9c1b7e04/chunks.jsonl`],
       ["POST", "/api/map", "Map a site", "Every page URL from the sitemap and the start page's links, in seconds, without extracting them. Pick what to scrape or crawl next.", `curl -X POST ${ORIGIN}/api/map \\\n  -H 'Content-Type: application/json' \\\n  -d '{"url": "https://www.python-httpx.org/"}'\n\n# → { "count": 23, "urls": [ { "url", "source": "sitemap" }, ... ] }`],
     ];
     const box = $("endpoints");
